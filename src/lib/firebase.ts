@@ -2,64 +2,146 @@ import { initializeApp, type FirebaseApp } from 'firebase/app';
 import {
   GoogleAuthProvider,
   getAuth,
-  signInWithPopup,
+  signInWithCredential,
   signOut,
   type Auth,
   type User,
 } from 'firebase/auth';
 
+/** Firebase web Google client — used with Google Identity Services (no firebaseapp.com popup). */
+const GOOGLE_WEB_CLIENT_ID =
+  (import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined) ||
+  '183754318076-ck9l1s0sje8updc4tgb2d581b2cj4jf8.apps.googleusercontent.com';
+
 const PROJECT = {
   apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) || 'AIzaSyBcP319FVEOh66xsbNLmNNh4kBFBR1vGCo',
+  authDomain: 'letsconnect-e8c03.firebaseapp.com',
   projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) || 'letsconnect-e8c03',
   appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) || '1:183754318076:web:24e296ed563b69c275f779',
   messagingSenderId:
     (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined) || '183754318076',
-  fallbackAuthDomain: 'letsconnect-e8c03.firebaseapp.com',
 };
 
-/** Prefer this site as authDomain so Google shows our host, not firebaseapp.com. */
-function authDomainForBrowser() {
-  if (typeof window === 'undefined') return PROJECT.fallbackAuthDomain;
-  const host = window.location.hostname;
-  if (!host || host === 'localhost' || host === '127.0.0.1') return PROJECT.fallbackAuthDomain;
-  // Ignore VITE_FIREBASE_AUTH_DOMAIN on real hosts — it often forces firebaseapp.com.
-  return host;
-}
-
 export function firebaseConfigured() {
-  return Boolean(PROJECT.apiKey && PROJECT.projectId && PROJECT.appId);
+  return Boolean(PROJECT.apiKey && PROJECT.projectId && PROJECT.appId && GOOGLE_WEB_CLIENT_ID);
 }
 
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
-let usedAuthDomain = '';
+let gisLoading: Promise<void> | null = null;
 
 function getFirebaseAuth() {
   if (!firebaseConfigured()) return null;
-  const authDomain = authDomainForBrowser();
-  if (!app || usedAuthDomain !== authDomain) {
-    app = initializeApp(
-      {
-        apiKey: PROJECT.apiKey,
-        authDomain,
-        projectId: PROJECT.projectId,
-        appId: PROJECT.appId,
-        messagingSenderId: PROJECT.messagingSenderId,
-      },
-      usedAuthDomain ? `lc-${authDomain}` : undefined,
-    );
+  if (!app) {
+    app = initializeApp(PROJECT);
     auth = getAuth(app);
-    usedAuthDomain = authDomain;
   }
   return auth;
 }
 
-function googleProvider() {
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: 'select_account' });
-  provider.addScope('email');
-  provider.addScope('profile');
-  return provider;
+function loadGis(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.reject(new Error('No window'));
+  const w = window as Window & { google?: { accounts?: { id?: unknown; oauth2?: unknown } } };
+  if (w.google?.accounts?.id) return Promise.resolve();
+  if (gisLoading) return gisLoading;
+  gisLoading = new Promise((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>('script[data-lc-gis="1"]');
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () => reject(new Error('Google sign-in script failed to load')));
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.dataset.lcGis = '1';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Google sign-in script failed to load'));
+    document.head.appendChild(script);
+  });
+  return gisLoading;
+}
+
+type GisCredentialResponse = { credential?: string };
+
+function requestGoogleIdToken(): Promise<string> {
+  return loadGis().then(
+    () =>
+      new Promise<string>((resolve, reject) => {
+        const google = (window as Window & {
+          google?: {
+            accounts: {
+              id: {
+                initialize: (config: Record<string, unknown>) => void;
+                prompt: (cb?: (notification: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean; getNotDisplayedReason?: () => string }) => void) => void;
+                cancel: () => void;
+                renderButton: (parent: HTMLElement, config: Record<string, unknown>) => void;
+              };
+            };
+          };
+        }).google;
+        if (!google?.accounts?.id) {
+          reject(new Error('Google sign-in is unavailable in this browser.'));
+          return;
+        }
+
+        let settled = false;
+        const finish = (err?: Error, token?: string) => {
+          if (settled) return;
+          settled = true;
+          try {
+            google.accounts.id.cancel();
+          } catch {
+            /* ignore */
+          }
+          host.remove();
+          if (err) reject(err);
+          else resolve(token!);
+        };
+
+        // Hidden GIS button click — stays on our origin (no firebaseapp.com handler).
+        const host = document.createElement('div');
+        host.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+        document.body.appendChild(host);
+
+        google.accounts.id.initialize({
+          client_id: GOOGLE_WEB_CLIENT_ID,
+          callback: (response: GisCredentialResponse) => {
+            if (response?.credential) finish(undefined, response.credential);
+            else finish(new Error('Google did not return a sign-in credential.'));
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+          context: 'signin',
+          ux_mode: 'popup',
+          itp_support: true,
+        });
+
+        google.accounts.id.renderButton(host, {
+          type: 'standard',
+          theme: 'outline',
+          size: 'large',
+          text: 'continue_with',
+          shape: 'rectangular',
+          logo_alignment: 'left',
+          width: 280,
+        });
+
+        window.setTimeout(() => {
+          const btn = host.querySelector('div[role="button"]') as HTMLElement | null;
+          if (!btn) {
+            finish(new Error('Could not start Google sign-in. Try again.'));
+            return;
+          }
+          btn.click();
+        }, 50);
+
+        window.setTimeout(() => {
+          finish(new Error('Google sign-in timed out. Try again.'));
+        }, 120_000);
+      }),
+  );
 }
 
 export function explainFirebaseAuthError(err: unknown) {
@@ -73,10 +155,10 @@ export function explainFirebaseAuthError(err: unknown) {
     return `This site (${host}) is not allowed for Google sign-in yet. Add it under Firebase → Authentication → Authorized domains.`;
   }
   if (code === 'auth/popup-closed-by-user' || /popup-closed/i.test(message)) {
-    return 'Google sign-in window closed before finishing. Try again, and keep the popup open until it completes.';
+    return 'Google sign-in window closed before finishing. Try again.';
   }
   if (code === 'auth/popup-blocked') {
-    return 'Your browser blocked the Google sign-in popup. Allow popups for this site and try again.';
+    return 'Your browser blocked the Google sign-in window. Allow popups for this site and try again.';
   }
   return message.replace(/^Firebase:\s*/i, '').trim() || 'Google sign-in failed';
 }
@@ -85,7 +167,9 @@ export async function signInWithGooglePopup(): Promise<{ user: User; idToken: st
   const authInstance = getFirebaseAuth();
   if (!authInstance) throw new Error('Google sign-in is not ready yet.');
   try {
-    const result = await signInWithPopup(authInstance, googleProvider());
+    const googleIdToken = await requestGoogleIdToken();
+    const credential = GoogleAuthProvider.credential(googleIdToken);
+    const result = await signInWithCredential(authInstance, credential);
     const idToken = await result.user.getIdToken();
     return { user: result.user, idToken };
   } catch (err) {
