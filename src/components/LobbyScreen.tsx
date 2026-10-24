@@ -268,13 +268,15 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
             />
           </label>
           {warning && <p className="warn-text">{warning}</p>}
-          <button type="button" className="primary xl ask-join" disabled={opening} onClick={join}>
-            {opening ? 'Opening camera\u2026' : asHost ? 'Start meeting' : 'Ask to join'}
-          </button>
-          <button type="button" className="secondary join-other" onClick={onBack}>
-            {asHost ? 'Back to home' : 'Other ways to join'}
-          </button>
-          <p className="ready-note">Use headphones if another LetsConnect window is open on this computer.</p>
+          <div className="lobby-cta">
+            <button type="button" className="primary xl ask-join" disabled={opening} onClick={join}>
+              {opening ? 'Opening camera\u2026' : asHost ? 'Start meeting' : 'Ask to join'}
+            </button>
+            <button type="button" className="secondary join-other" onClick={onBack}>
+              {asHost ? 'Back to home' : 'Other ways to join'}
+            </button>
+          </div>
+          <p className="ready-note desk-only">Use headphones if another LetsConnect window is open on this computer.</p>
         </section>
       </div>
     </main>

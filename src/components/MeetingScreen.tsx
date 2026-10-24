@@ -960,13 +960,13 @@ async function toggleRecord() {
       <header className="topbar">
         <div className="top-id">
           <Logo size={22} />
-          <strong>LetsConnect</strong>
+          <strong className="desk-only">LetsConnect</strong>
           <code className="meet-code">{code}</code>
-          <button type="button" className="secondary slim" onClick={() => void copyLink()}>
+          <button type="button" className="secondary slim desk-only" onClick={() => void copyLink()}>
             Copy link
           </button>
         </div>
-        <div className="top-mid">
+        <div className="top-mid desk-only">
           <span className="time">{formatElapsed(now - started.current)}</span>
           {isHost ? (
             <span className="pill">Host</span>
@@ -993,14 +993,17 @@ async function toggleRecord() {
             type="button"
             className={panel === 'catchup' ? 'top-icon on' : 'top-icon'}
             title="Catch-Up"
+            aria-label="Catch-Up"
             onClick={() => setPanel((value) => (value === 'catchup' ? null : 'catchup'))}
           >
-            Catch-Up
+            <span className="desk-only">Catch-Up</span>
+            <span className="phone-only top-icon-label">Up</span>
           </button>
           <button
             type="button"
             className={panel === 'people' ? 'top-icon on' : 'top-icon'}
             title="People"
+            aria-label="People"
             onClick={() => setPanel((value) => (value === 'people' ? null : 'people'))}
           >
             <IconPeople />
@@ -1010,13 +1013,16 @@ async function toggleRecord() {
             type="button"
             className={panel === 'chat' ? 'top-icon on' : 'top-icon'}
             title="Chat"
+            aria-label="Chat"
             onClick={() => setPanel((value) => (value === 'chat' ? null : 'chat'))}
           >
             <IconChat />
             {unread > 0 && <em className="badge">{unread}</em>}
           </button>
-          <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-          <div className="seg" aria-label="Layout">
+          <span className="desk-only">
+            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+          </span>
+          <div className="seg desk-only" aria-label="Layout">
             {screens.length ? (
               <span className="pill">Presentation</span>
             ) : (
