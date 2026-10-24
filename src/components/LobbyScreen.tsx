@@ -287,7 +287,9 @@ function MicMeter({ stream, on }: { stream: MediaStream | null; on: boolean }) {
     const track = stream?.getAudioTracks()[0];
     if (!track || !on) return;
     const ctx = new AudioContext();
-    const source = ctx.createMediaStreamSource(new MediaStream([track]));
+    // Clone so Web Audio never steals the live mic track used in the meeting.
+    const clone = track.clone();
+    const source = ctx.createMediaStreamSource(new MediaStream([clone]));
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 256;
     source.connect(analyser);
@@ -308,6 +310,7 @@ function MicMeter({ stream, on }: { stream: MediaStream | null; on: boolean }) {
     tick();
     return () => {
       cancelAnimationFrame(frame);
+      clone.stop();
       void ctx.close();
     };
   }, [on, stream]);

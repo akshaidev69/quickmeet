@@ -376,8 +376,11 @@ export function useRoom(options: Options) {
         tuneReceiverLatency(event.receiver);
         const track = event.track;
         if (track.kind === 'audio') {
+          // Always keep inbound mic/screen audio enabled for playback.
+          track.enabled = true;
           const item = bucket(remoteId);
           if (!item.audio.getTracks().some((current) => current.id === track.id)) item.audio.addTrack(track);
+          track.onunmute = () => bump();
           track.onended = () => {
             item.audio.removeTrack(track);
             bump();

@@ -140,8 +140,12 @@ function useLoudest(
       return;
     }
     const ctx = new AudioContext();
+    // Clone tracks ? wiring the live WebRTC track into Web Audio mutes <audio> playback in Chromium / Android WebView.
+    const clones: MediaStreamTrack[] = [];
     const analysers = live.map((item) => {
-      const source = ctx.createMediaStreamSource(new MediaStream([item.track!]));
+      const clone = item.track!.clone();
+      clones.push(clone);
+      const source = ctx.createMediaStreamSource(new MediaStream([clone]));
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.35;
@@ -184,6 +188,7 @@ function useLoudest(
     }, 90);
     return () => {
       window.clearInterval(timer);
+      clones.forEach((track) => track.stop());
       void ctx.close();
     };
     // The key captures the track list for this run.
@@ -1926,16 +1931,36 @@ function RemoteAudio({
   const ref = useRef<HTMLAudioElement>(null);
   const blockedRef = useRef(onBlocked);
   blockedRef.current = onBlocked;
-  const key = stream?.getAudioTracks().map((track) => track.id).join(',') ?? '';
+  const key =
+    stream
+      ?.getAudioTracks()
+      .map((track) => `${track.id}:${track.readyState}:${track.enabled ? 1 : 0}`)
+      .join(',') ?? '';
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
+    stream?.getAudioTracks().forEach((track) => {
+      if (track.readyState === 'live') track.enabled = true;
+    });
+    element.muted = false;
+    element.volume = 1;
+    element.autoplay = true;
     element.srcObject = stream;
     const withSink = element as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> };
     if (sinkId && withSink.setSinkId) void withSink.setSinkId(sinkId).catch(() => undefined);
-    void element.play().catch(() => blockedRef.current());
+    const tryPlay = () => {
+      void element.play().catch(() => blockedRef.current());
+    };
+    tryPlay();
+    const onGesture = () => tryPlay();
+    window.addEventListener('pointerdown', onGesture, { once: true });
+    window.addEventListener('keydown', onGesture, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', onGesture);
+      window.removeEventListener('keydown', onGesture);
+    };
   }, [key, sinkId, stream]);
-  return <audio ref={ref} autoPlay playsInline />;
+  return <audio ref={ref} autoPlay playsInline preload="auto" />;
 }
 
 function PeopleList({
