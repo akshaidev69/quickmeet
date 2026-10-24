@@ -22,9 +22,24 @@ type Options = {
   hand: boolean;
   sharing: boolean;
   recording: boolean;
+  /** Creator / claimed host — skip guest knock when possible */
+  claimHost?: boolean;
   onForceMute?: (kind: 'mic' | 'cam') => void;
   onHostCast?: (cast: RecordCastSignal, active: boolean) => void;
 };
+
+function stablePeerId(code: string) {
+  const key = `lc-peer:${code}`;
+  try {
+    const existing = sessionStorage.getItem(key);
+    if (existing) return existing;
+    const next = uid();
+    sessionStorage.setItem(key, next);
+    return next;
+  } catch {
+    return uid();
+  }
+}
 
 type Bucket = { camera: MediaStream; screen: MediaStream; audio: MediaStream };
 type VideoItem = { mid: string | null; track: MediaStreamTrack };
@@ -118,9 +133,11 @@ function systemNote(text: string): ChatMessage {
 }
 
 export function useRoom(options: Options) {
-  const peerId = useRef(uid()).current;
+  const peerId = useRef(stablePeerId(options.code)).current;
+  const claimHostRef = useRef(Boolean(options.claimHost));
+  claimHostRef.current = Boolean(options.claimHost);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
-  const [gate, setGate] = useState<GateState>('connecting');
+  const [gate, setGate] = useState<GateState>(options.claimHost ? 'connecting' : 'connecting');
   const [waiting, setWaiting] = useState<WaitingPerson[]>([]);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [connState, setConnState] = useState<Record<string, RTCPeerConnectionState | 'new'>>({});
@@ -602,6 +619,7 @@ export function useRoom(options: Options) {
             room: code,
             from: peerId,
             name: safeName(nameRef.current),
+            claimHost: claimHostRef.current,
           }),
         );
       };

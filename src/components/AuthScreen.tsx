@@ -77,9 +77,9 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 
         <button type="button" className={googleOn ? 'google-btn' : 'google-btn off'} disabled={busy || !googleOn} onClick={() => void onGoogle()}>
           <GoogleMark />
-          {googleOn ? 'Continue with Google' : 'Google sign-in loading…'}
+          {busy ? 'Opening Google…' : googleOn ? 'Continue with Google' : 'Google sign-in loading…'}
         </button>
-        <p className="auth-hint">Uses your Google account (anmolg2270@gmail.com) via Firebase project LetsConnect.</p>
+        <p className="auth-hint">Sign in with your Google account to open your LetsConnect meetings.</p>
 
         <div className="auth-or">or use email</div>
 

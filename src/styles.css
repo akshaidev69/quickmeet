@@ -1688,6 +1688,9 @@ kbd {
   .cmd, .leave { min-width: 48px; }
 }
 
+.waiting-room.host-start .waiting-kicker { color: var(--accent-ink); }
+.waiting-room.host-start .waiting-copy h1 { letter-spacing: -0.03em; }
+
 @media (prefers-reduced-motion: reduce) {
   .react-bubble, .hand-badge, .hand-pill, .hub-glow, .hub-wrap, .hub-start, .hub-side,
   .demo-live::before, .demo-chip, .market-hero-copy, .market-hero-visual { animation: none; }

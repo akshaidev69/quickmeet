@@ -244,6 +244,7 @@ function AppRoutes() {
         <MeetingScreen
           key={code}
           code={code}
+          asHost={asHost}
           settings={settings}
           initialStream={carry}
           onSettings={setSettings}

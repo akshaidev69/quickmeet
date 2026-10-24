@@ -60,6 +60,13 @@ export default defineConfig({
     host: true,
     port: 5173,
     strictPort: true,
+    proxy: {
+      '/__/auth': {
+        target: 'https://letsconnect-e8c03.firebaseapp.com',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
   preview: {
     host: true,

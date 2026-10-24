@@ -177,8 +177,21 @@ export function attachSignal(httpServer) {
         }
 
         const memory = memoryFor(room);
+        const claimHost = Boolean(msg.claimHost);
         let hostId = stickyHost(room);
+        const hostMember = hostId ? map.get(hostId) : null;
+        const hostAlive =
+          Boolean(hostId) &&
+          hostId !== peerId &&
+          Boolean(hostMember) &&
+          hostMember.ws !== ws &&
+          hostMember.ws.readyState === 1;
+
         if (!hostId) {
+          hostId = peerId;
+          hosts.set(room, peerId);
+        } else if (!hostAlive && (claimHost || peerId === hostId || memory.has(peerId))) {
+          // Sticky host offline — creator / returning host takes the seat.
           hostId = peerId;
           hosts.set(room, peerId);
         }

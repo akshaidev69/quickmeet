@@ -40,6 +40,7 @@ import type { Settings } from '../types';
 
 type Props = {
   code: string;
+  asHost?: boolean;
   settings: Settings;
   initialStream: MediaStream | null;
   onSettings: (settings: Settings) => void;
@@ -191,7 +192,7 @@ function useLoudest(
   return active;
 }
 
-export function MeetingScreen({ code, settings, initialStream, onSettings, onLeave }: Props) {
+export function MeetingScreen({ code, asHost = false, settings, initialStream, onSettings, onLeave }: Props) {
   const { toasts, push: toast } = useToasts();
   const [stream, setStream] = useState<MediaStream | null>(initialStream);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
@@ -293,6 +294,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     hand,
     sharing,
     recording,
+    claimHost: asHost,
     onForceMute: (kind) => {
       if (kind === 'mic') setMicOn(false);
       else setCamOn(false);
@@ -917,6 +919,7 @@ async function toggleRecord() {
         code={code}
         name={name}
         gate={gate}
+        asHost={asHost}
         stream={stream}
         camOn={camOn}
         micOn={micOn}
@@ -2438,6 +2441,7 @@ function WaitingRoom({
   code,
   name,
   gate,
+  asHost = false,
   stream,
   camOn,
   micOn,
@@ -2451,6 +2455,7 @@ function WaitingRoom({
   code: string;
   name: string;
   gate: 'connecting' | 'waiting';
+  asHost?: boolean;
   stream: MediaStream | null;
   camOn: boolean;
   micOn: boolean;
@@ -2471,8 +2476,25 @@ function WaitingRoom({
     });
   }, [camOn, stream]);
 
+  const hostStarting = asHost;
+  const kicker = hostStarting
+    ? 'Starting\u2026'
+    : gate === 'connecting'
+      ? 'Connecting\u2026'
+      : 'Knock sent';
+  const title = hostStarting
+    ? 'Opening your meeting'
+    : gate === 'connecting'
+      ? 'Reaching the room\u2026'
+      : 'Waiting for the host';
+  const detail = hostStarting
+    ? 'You are the host. Entering the room now \u2014 guests who use your link will knock first.'
+    : gate === 'connecting'
+      ? 'One moment while we find the meeting.'
+      : `You'll appear as ${name}. The host or a co-host will let you in.`;
+
   return (
-    <main className="waiting-room">
+    <main className={hostStarting ? 'waiting-room host-start' : 'waiting-room'}>
       <div className="waiting-glow" aria-hidden="true" />
       <section className="waiting-shell">
         <header className="waiting-brand">
@@ -2497,14 +2519,10 @@ function WaitingRoom({
             </div>
           </div>
           <div className="waiting-copy">
-            <p className="waiting-kicker">{gate === 'connecting' ? 'Connecting…' : 'Knock sent'}</p>
-            <h1>{gate === 'connecting' ? 'Reaching the room…' : 'Waiting for the host'}</h1>
-            <p>
-              {gate === 'connecting'
-                ? 'One moment while we find the meeting.'
-                : `You'll appear as ${name}. The host or a co-host will let you in.`}
-            </p>
-            {gate === 'waiting' && (
+            <p className="waiting-kicker">{kicker}</p>
+            <h1>{title}</h1>
+            <p>{detail}</p>
+            {(gate === 'waiting' || hostStarting) && (
               <div className="waiting-dots" aria-hidden="true">
                 <span />
                 <span />
