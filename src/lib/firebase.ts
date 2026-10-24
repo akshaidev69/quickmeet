@@ -40,16 +40,43 @@ function getFirebaseAuth() {
   return auth;
 }
 
-export async function signInWithGooglePopup(): Promise<{ user: User; idToken: string }> {
-  const authInstance = getFirebaseAuth();
-  if (!authInstance) throw new Error('Firebase is not configured yet.');
+function googleProvider() {
   const provider = new GoogleAuthProvider();
   provider.setCustomParameters({ prompt: 'select_account', login_hint: 'anmolg2270@gmail.com' });
   provider.addScope('email');
   provider.addScope('profile');
-  const result = await signInWithPopup(authInstance, provider);
-  const idToken = await result.user.getIdToken();
-  return { user: result.user, idToken };
+  return provider;
+}
+
+export function explainFirebaseAuthError(err: unknown) {
+  const code =
+    typeof err === 'object' && err && 'code' in err && typeof (err as { code: unknown }).code === 'string'
+      ? (err as { code: string }).code
+      : '';
+  const message = err instanceof Error ? err.message : String(err || 'Google sign-in failed');
+  if (code === 'auth/unauthorized-domain' || /unauthorized-domain/i.test(message)) {
+    const host = typeof window !== 'undefined' ? window.location.hostname : 'your-domain';
+    return `This site (${host}) is not allowed for Google sign-in yet. In Firebase Console → Authentication → Settings → Authorized domains, add: ${host}`;
+  }
+  if (code === 'auth/popup-closed-by-user' || /popup-closed/i.test(message)) {
+    return 'Google sign-in window closed before finishing. Try again, and keep the popup open until it completes.';
+  }
+  if (code === 'auth/popup-blocked') {
+    return 'Your browser blocked the Google sign-in popup. Allow popups for this site and try again.';
+  }
+  return message.replace(/^Firebase:\s*/i, '').trim() || 'Google sign-in failed';
+}
+
+export async function signInWithGooglePopup(): Promise<{ user: User; idToken: string }> {
+  const authInstance = getFirebaseAuth();
+  if (!authInstance) throw new Error('Firebase is not configured yet.');
+  try {
+    const result = await signInWithPopup(authInstance, googleProvider());
+    const idToken = await result.user.getIdToken();
+    return { user: result.user, idToken };
+  } catch (err) {
+    throw new Error(explainFirebaseAuthError(err));
+  }
 }
 
 export async function signOutFirebase() {

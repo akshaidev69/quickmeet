@@ -57,6 +57,7 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       onSuccess();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Google sign-in failed');
+      console.error('Google sign-in failed', err);
     } finally {
       setBusy(false);
     }
