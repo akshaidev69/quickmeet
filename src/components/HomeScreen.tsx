@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { ThemeButton } from './LookControls';
 import { Logo } from './icons';
+import { useAuth } from '../lib/auth';
+import { fetchMeetings, removeMeeting, type SavedMeeting } from '../lib/api';
 import { formatCode, isFullCode, meetingCode, safeName, uid } from '../lib/code';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
 
@@ -12,6 +14,8 @@ type Props = {
   onForget: (code: string) => void;
   onSchedule: (items: ScheduledMeeting[]) => void;
   onEnter: (code: string, title: string, view: 'lobby' | 'room') => void;
+  onLogout: () => void;
+  onMarketing: () => void;
 };
 
 function whenLabel(ts: number) {
@@ -23,14 +27,59 @@ function whenLabel(ts: number) {
   });
 }
 
-export function HomeScreen({ settings, recent, schedule, onSettings, onForget, onSchedule, onEnter }: Props) {
+function formatDuration(ms: number) {
+  if (!ms) return 'In progress';
+  const total = Math.round(ms / 1000);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+export function HomeScreen({
+  settings,
+  recent,
+  schedule,
+  onSettings,
+  onForget,
+  onSchedule,
+  onEnter,
+  onLogout,
+  onMarketing,
+}: Props) {
+  const { user } = useAuth();
   const [code, setCode] = useState('');
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
   const [when, setWhen] = useState('');
   const [wifiUrls, setWifiUrls] = useState<string[]>([]);
   const [copiedUrl, setCopiedUrl] = useState('');
+  const [cloud, setCloud] = useState<SavedMeeting[]>([]);
   const ready = isFullCode(code);
+  const greeting = (() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 18) return 'Good afternoon';
+    return 'Good evening';
+  })();
+
+  useEffect(() => {
+    if (user?.name && !settings.name.trim()) {
+      onSettings({ ...settings, name: user.name });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
+  useEffect(() => {
+    let cancel = false;
+    void fetchMeetings()
+      .then((data) => {
+        if (!cancel) setCloud(data.meetings);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancel = false;
@@ -80,21 +129,59 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
     setWhen('');
   }
 
+  async function forgetCloud(id: string) {
+    try {
+      await removeMeeting(id);
+      setCloud((items) => items.filter((item) => item.id !== id));
+    } catch {
+      /* ignore */
+    }
+  }
+
   return (
-    <main className="home">
-      <div className="home-wrap">
-        <header className="brand">
-          <Logo size={36} />
-          <div>
-            <h1>QuickMeet</h1>
-            <p>FaceCast recordings, your own photo background, light or dark — built for real rooms.</p>
+    <main className="home home-hub">
+      <div className="hub-glow" aria-hidden="true" />
+      <div className="hub-grid" aria-hidden="true" />
+
+      <div className="home-wrap hub-wrap">
+        <header className="hub-top">
+          <button type="button" className="hub-logo" onClick={onMarketing} aria-label="LetsConnect home">
+            <Logo size={34} />
+            <span>LetsConnect</span>
+          </button>
+          <div className="hub-top-actions">
+            {user && (
+              <div className="hub-user">
+                {user.avatar ? (
+                  <img src={user.avatar} alt="" className="account-avatar" />
+                ) : (
+                  <span className="account-avatar fallback">{(user.name || 'A').slice(0, 1)}</span>
+                )}
+                <div>
+                  <strong>{user.name}</strong>
+                  <span>{user.plan === 'free' ? 'Free' : user.plan}</span>
+                </div>
+              </div>
+            )}
+            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+            <button type="button" className="hub-ghost" onClick={onMarketing}>
+              Product
+            </button>
+            <button type="button" className="hub-ghost" onClick={onLogout}>
+              Log out
+            </button>
           </div>
-          <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
         </header>
 
-        <section className="card start-card">
+        <section className="hub-hero">
+          <p className="hub-kicker">{greeting}{user?.name ? `, ${user.name.split(' ')[0]}` : ''}</p>
+          <h1>LetsConnect</h1>
+          <p className="hub-lead">Start a room, invite on Wi?Fi, and keep every meeting on your account.</p>
+        </section>
+
+        <section className="hub-start">
           <label className="field">
-            <span>Your name</span>
+            <span>Your name in meetings</span>
             <input
               value={settings.name}
               placeholder="How should people see you?"
@@ -106,10 +193,11 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
               }}
             />
           </label>
-          <button type="button" className="primary xl" onClick={start}>
+          <button type="button" className="primary xl hub-cta" onClick={start}>
             Start meeting
           </button>
-          <p className="hint">Starts in one step. You can turn the camera off before anyone sees you.</p>
+          <p className="hint">You can mute camera before anyone sees you. History syncs to this account.</p>
+
           <div className="or">or join with a code</div>
           <div className="join-row">
             <input
@@ -139,23 +227,43 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
             />
             <span>Skip the camera check and join immediately</span>
           </label>
-          <details className="help">
-            <summary>How inviting works</summary>
-            <p>
-              Start a meeting, then copy the link. Phones and laptops on the same Wi‑Fi can open that link while
-              this computer is running QuickMeet. The first visit may ask you to trust the security warning once.
-              Use headphones if two devices share a room, or the microphones will echo.
-            </p>
-          </details>
         </section>
 
-        <aside className="side-col">
+        <aside className="side-col hub-side">
+          <section className="hub-panel">
+            <div className="hub-panel-head">
+              <h2>Your meetings</h2>
+              <span>{cloud.length}</span>
+            </div>
+            <p className="hint">Synced to your account ? not just this browser.</p>
+            {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
+            <ul className="list hub-list">
+              {cloud.map((item) => (
+                <li key={item.id}>
+                  <div>
+                    <strong>{item.title}</strong>
+                    <span>
+                      {whenLabel(item.startedAt)} � {formatDuration(item.durationMs)}
+                    </span>
+                    <code>{item.code}</code>
+                  </div>
+                  <div className="row-actions">
+                    <button type="button" onClick={() => join(item.code, item.title)}>
+                      Open
+                    </button>
+                    <button type="button" onClick={() => void forgetCloud(item.id)}>
+                      Remove
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+
           {wifiUrls.length > 0 && (
-            <section className="card wifi-card">
-              <h2>Wi‑Fi access</h2>
-              <p className="hint">
-                Keep this computer awake. On another phone or laptop on the same Wi‑Fi, open one of these links.
-              </p>
+            <section className="hub-panel">
+              <h2>Wi?Fi access</h2>
+              <p className="hint">Open on another device on the same network.</p>
               <ul className="list plain wifi-list">
                 {wifiUrls.map((url) => (
                   <li key={url}>
@@ -168,12 +276,10 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
                   </li>
                 ))}
               </ul>
-              <p className="fine">
-                Camera and mic need the https link. Accept the browser warning once, then join the meeting.
-              </p>
             </section>
           )}
-          <section className="card">
+
+          <section className="hub-panel">
             <div className="card-head">
               <h2>Scheduled</h2>
               <button type="button" className="textbtn" onClick={() => setPlanning((open) => !open)}>
@@ -193,11 +299,10 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
                 <button className="secondary" type="submit">
                   Create meeting code
                 </button>
-                <p className="hint">Saved on this computer. Copy the code and send it to people.</p>
               </form>
             )}
-            {schedule.length === 0 && !planning && <p className="empty">No meetings scheduled on this computer.</p>}
-            <ul className="list">
+            {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled on this computer.</p>}
+            <ul className="list hub-list">
               {schedule.map((item) => (
                 <li key={item.id}>
                   <div>
@@ -209,10 +314,7 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
                     <button type="button" onClick={() => join(item.code, item.title)}>
                       Start
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}
-                    >
+                    <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>
                       Remove
                     </button>
                   </div>
@@ -221,10 +323,10 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
             </ul>
           </section>
 
-          <section className="card">
-            <h2>Recent</h2>
-            {recent.length === 0 && <p className="empty">Meetings you start or join show up here.</p>}
-            <ul className="list">
+          <section className="hub-panel">
+            <h2>Recent on this device</h2>
+            {recent.length === 0 && <p className="empty">Local shortcuts for this browser.</p>}
+            <ul className="list hub-list">
               {recent.map((item) => (
                 <li key={item.code}>
                   <div>
@@ -244,9 +346,8 @@ export function HomeScreen({ settings, recent, schedule, onSettings, onForget, o
               ))}
             </ul>
           </section>
-          <p className="fine">
-            You appear as {safeName(settings.name)}. Anyone with the link can join. Video goes directly between browsers.
-          </p>
+
+          <p className="fine hub-fine">You appear as {safeName(settings.name)}. Video goes peer?to?peer.</p>
         </aside>
       </div>
     </main>

@@ -1,4 +1,4 @@
-const DB = 'quickmeet';
+const DB = 'LetsConnect';
 const STORE = 'assets';
 const KEY = 'custom-background';
 

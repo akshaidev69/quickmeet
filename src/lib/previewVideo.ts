@@ -5,10 +5,10 @@ preview.playsInline = true;
 preview.setAttribute('playsinline', '');
 
 function park() {
-  let holder = document.getElementById('quickmeet-preview-park');
+  let holder = document.getElementById('LetsConnect-preview-park');
   if (!holder) {
     holder = document.createElement('div');
-    holder.id = 'quickmeet-preview-park';
+    holder.id = 'LetsConnect-preview-park';
     holder.style.cssText = 'position:fixed;width:0;height:0;overflow:hidden;pointer-events:none;';
     document.body.appendChild(holder);
   }

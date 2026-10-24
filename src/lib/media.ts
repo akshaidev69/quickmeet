@@ -30,8 +30,9 @@ function audioConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConst
 
 function videoConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConstraints | boolean {
   return {
-    width: { ideal: 1280 },
-    height: { ideal: 720 },
+    width: { ideal: 960 },
+    height: { ideal: 540 },
+    frameRate: { ideal: 30, max: 30 },
     ...(exact && opts.camId ? { deviceId: { exact: opts.camId } } : {}),
   };
 }
@@ -41,7 +42,11 @@ function applyEnabled(stream: MediaStream, opts: AcquireOptions) {
     track.enabled = opts.wantMic;
   });
   stream.getVideoTracks().forEach((track) => {
-    track.contentHint = 'detail';
+    try {
+      track.contentHint = 'motion';
+    } catch {
+      /* ignore */
+    }
     track.enabled = opts.wantCam;
   });
 }

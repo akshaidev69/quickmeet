@@ -14,8 +14,9 @@ interface SpeechRec extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
   lang: string;
+  maxAlternatives: number;
   onresult: ((ev: SpeechResultEvent) => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((ev: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start(): void;
   stop(): void;

@@ -217,17 +217,21 @@ export class LookEngine {
     private onStatus: (status: LookStatus) => void,
   ) {
     this.canvas = document.createElement('canvas');
-    this.canvas.width = 1280;
-    this.canvas.height = 720;
+    this.canvas.width = 960;
+    this.canvas.height = 540;
     const ctx = this.canvas.getContext('2d', { alpha: false });
     const personCtx = this.person.getContext('2d', { willReadFrequently: true });
     if (!ctx || !personCtx) throw new Error('Canvas is not available');
     this.ctx = ctx;
     this.personCtx = personCtx;
-    const stream = this.canvas.captureStream(15);
+    const stream = this.canvas.captureStream(30);
     const track = stream.getVideoTracks()[0];
     if (!track) throw new Error('Canvas stream has no video');
-    track.contentHint = 'detail';
+    try {
+      track.contentHint = 'motion';
+    } catch {
+      /* ignore */
+    }
     this.track = track;
     this.raf = requestAnimationFrame(this.loop);
     void this.prepare();
@@ -259,7 +263,8 @@ export class LookEngine {
 
   private loop = (time: number) => {
     if (this.stopped) return;
-    if (time - this.lastPaint > 64) {
+    // Paint every frame for lower glass-to-glass delay when effects are on.
+    if (time - this.lastPaint > 24) {
       this.lastPaint = time;
       this.paint();
     }

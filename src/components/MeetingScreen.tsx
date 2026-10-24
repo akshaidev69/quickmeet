@@ -22,12 +22,20 @@ import { safeName } from '../lib/code';
 import { acquireMedia } from '../lib/media';
 import { getPreviewVideo, mountPreview } from '../lib/previewVideo';
 import { colorFor, initials } from '../lib/people';
-import { createRecorder, downloadBlob, type RecordCast } from '../lib/record';
+import {
+  createRecorder,
+  downloadRecordZip,
+  recordFiles,
+  type RecordCast,
+  type RecordFile,
+} from '../lib/record';
+import { buildCatchUp, type CatchUpEvent } from '../lib/meetingIntel';
 import { beep } from '../lib/sound';
 import { useCaptions } from '../hooks/useCaptions';
 import { useRoom, type RemotePeer } from '../hooks/useRoom';
 import { useToasts } from '../hooks/useToasts';
 import { SettingsDialog } from './SettingsDialog';
+import { RecordingsDialog } from './RecordingsDialog';
 import type { Settings } from '../types';
 
 type Props = {
@@ -39,9 +47,9 @@ type Props = {
 };
 
 type Layout = 'grid' | 'speaker' | 'sidebar';
-type Panel = 'chat' | 'people' | null;
+type Panel = 'chat' | 'people' | 'catchup' | null;
 type Popover = 'react' | 'more' | 'leave' | 'look' | null;
-type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | null;
+type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | null;
 
 type TileModel = {
   key: string;
@@ -60,12 +68,12 @@ type TileModel = {
 };
 
 const reactions = [
-  ['👍', 'Thumbs up'],
-  ['👏', 'Clap'],
-  ['❤️', 'Heart'],
-  ['😂', 'Laugh'],
-  ['😮', 'Wow'],
-  ['🎉', 'Celebrate'],
+  ['\u{1F44D}', 'Thumbs up'],
+  ['\u{1F44F}', 'Clap'],
+  ['\u{2764}\u{FE0F}', 'Heart'],
+  ['\u{1F602}', 'Laugh'],
+  ['\u{1F62E}', 'Wow'],
+  ['\u{1F389}', 'Celebrate'],
 ] as const;
 
 const shortcuts = [
@@ -118,7 +126,10 @@ function inviteLink(code: string) {
   return url.toString();
 }
 
-function useLoudest(items: { id: string; track: MediaStreamTrack | null }[]) {
+function useLoudest(
+  items: { id: string; track: MediaStreamTrack | null }[],
+  preferId: string | null,
+) {
   const [active, setActive] = useState<string | null>(null);
   const key = items.map((item) => `${item.id}:${item.track?.id ?? ''}:${item.track?.enabled ? 1 : 0}`).join('|');
   useEffect(() => {
@@ -131,7 +142,8 @@ function useLoudest(items: { id: string; track: MediaStreamTrack | null }[]) {
     const analysers = live.map((item) => {
       const source = ctx.createMediaStreamSource(new MediaStream([item.track!]));
       const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.35;
       source.connect(analyser);
       return { id: item.id, analyser, data: new Uint8Array(analyser.fftSize) };
     });
@@ -141,6 +153,7 @@ function useLoudest(items: { id: string; track: MediaStreamTrack | null }[]) {
       void ctx.resume();
       let best = '';
       let bestValue = 0;
+      let preferValue = 0;
       for (const item of analysers) {
         item.analyser.getByteTimeDomainData(item.data);
         let sum = 0;
@@ -153,24 +166,28 @@ function useLoudest(items: { id: string; track: MediaStreamTrack | null }[]) {
           bestValue = rms;
           best = item.id;
         }
+        if (preferId && item.id === preferId) preferValue = rms;
       }
       const time = Date.now();
-      if (bestValue > 12) {
-        current = best;
-        holdUntil = time + 1600;
-        setActive(best);
+      // Prefer host/admin whenever they are clearly speaking.
+      const next =
+        preferId && preferValue > 6.5 ? preferId : bestValue > 6.5 ? best : '';
+      if (next) {
+        current = next;
+        holdUntil = time + 2400;
+        setActive(next);
       } else if (current && time > holdUntil) {
         current = null;
         setActive(null);
       }
-    }, 200);
+    }, 90);
     return () => {
       window.clearInterval(timer);
       void ctx.close();
     };
     // The key captures the track list for this run.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, preferId]);
   return active;
 }
 
@@ -195,11 +212,13 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
   const [hear, setHear] = useState(false);
   const [pollHidden, setPollHidden] = useState(false);
   const [hideAlone, setHideAlone] = useState(false);
-  const [hideTip, setHideTip] = useState(() => sessionStorage.getItem('qm-tip') === '1');
+  const [hideTip, setHideTip] = useState(() => sessionStorage.getItem('lc-tip') === '1');
   const [chatText, setChatText] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [deviceNonce, setDeviceNonce] = useState(0);
+  const [recordReady, setRecordReady] = useState<RecordFile[] | null>(null);
+  const [joinedAt] = useState(() => Date.now());
 
   const started = useRef(Date.now());
   const downSince = useRef(Date.now());
@@ -231,17 +250,25 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     return new MediaStream([...stream.getAudioTracks(), look.track]);
   }, [look.track, stream]);
 
+  const hostCastHandler = useRef<(cast: RecordCast, active: boolean) => void>(() => undefined);
+  const hostIdRef = useRef<string | null>(null);
+  const chatRef = useRef<{ name: string; text: string; ts: number; system?: boolean }[]>([]);
+
   const {
     myId,
     status,
+    gate,
+    waiting,
     peers,
     chat,
     reactions: reactionItems,
     caption,
     kickedBy,
     hostId,
+    coHostIds,
     ask,
     poll,
+    hostCastActive,
     dismissAsk,
     sendChat,
     sendReaction,
@@ -250,6 +277,10 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     moderate,
     retry,
     setScreenTrack,
+    admit,
+    deny,
+    setCohost,
+    publishCast,
     createPoll,
     vote,
     endPoll,
@@ -267,18 +298,28 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
       else setCamOn(false);
       toast(kind === 'mic' ? 'The host turned your microphone off.' : 'The host turned your camera off.');
     },
+    onHostCast: (cast, active) => hostCastHandler.current(cast, active),
   });
 
-  const captionSupported = useCaptions(captionsOn, (text) => {
-    const time = Date.now();
-    if (time - lastCaption.current < 280) return;
-    lastCaption.current = time;
-    sendCaption(text);
-  });
+  // Each person captions their own mic and shares text instantly.
+  const { supported: captionSupported, error: captionError } = useCaptions(
+    captionsOn && micOn,
+    (text, isFinal) => {
+      const time = Date.now();
+      if (!isFinal && time - lastCaption.current < 40) return;
+      lastCaption.current = time;
+      sendCaption(text);
+    },
+  );
 
   const name = safeName(settings.name);
   const isHost = hostId === myId;
+  const isCoHost = coHostIds.includes(myId);
+  const canModerate = isHost || isCoHost;
+  const canRecord = canModerate;
   const hostPeer = peers.find((peer) => peer.id === hostId);
+  hostIdRef.current = hostId;
+  chatRef.current = chat;
   const hasMic = Boolean(stream?.getAudioTracks().length);
   const hasCam = Boolean(stream?.getVideoTracks().length);
 
@@ -326,8 +367,9 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
       const recorder = recorderRef.current;
       recorderRef.current = null;
       if (recorder) {
-        void recorder.stop().then((blob) => {
-          if (blob.size) downloadBlob(blob, `quickmeet-${code}.webm`);
+        void recorder.stop().then((bundle) => {
+          const total = bundle.host.size + bundle.room.size + bundle.screen.size + bundle.chat.size;
+          if (total) void downloadRecordZip(bundle, code);
         });
       }
     };
@@ -356,8 +398,23 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
   }, [kickedBy]);
 
   useEffect(() => {
-    if (captionsOn && !captionSupported) toast('Live captions need Chrome or Edge.');
-  }, [captionSupported, captionsOn, toast]);
+    if (canModerate && waiting.length > 0) setPanel('people');
+  }, [canModerate, waiting.length]);
+
+  useEffect(() => {
+    if (!captionsOn) return;
+    if (!captionSupported || captionError === 'unsupported') {
+      setCaptionsOn(false);
+      toast('Live captions need Chrome or Edge on HTTPS.');
+      return;
+    }
+    if (captionError === 'denied') {
+      setCaptionsOn(false);
+      toast('Allow microphone access to use captions.');
+      return;
+    }
+    if (captionError === 'failed') toast('Captions could not start. Try again.');
+  }, [captionError, captionSupported, captionsOn, toast]);
 
   useEffect(() => {
     if (!settings.sounds) {
@@ -441,13 +498,16 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     if (poll) setPollHidden(false);
   }, [poll?.id]);
 
-  const loudest = useLoudest([
-    { id: myId, track: micOn ? stream?.getAudioTracks()[0] ?? null : null },
-    ...peers.map((peer) => ({
-      id: peer.id,
-      track: peer.micOn ? peer.audio?.getAudioTracks()[0] ?? null : null,
-    })),
-  ]);
+  const loudest = useLoudest(
+    [
+      { id: myId, track: micOn ? stream?.getAudioTracks()[0] ?? null : null },
+      ...peers.map((peer) => ({
+        id: peer.id,
+        track: peer.micOn ? peer.audio?.getAudioTracks()[0] ?? null : null,
+      })),
+    ],
+    hostId,
+  );
 
   audioTracksRef.current = () => {
     const selected = new Set(castRef.current.peerIds);
@@ -514,26 +574,49 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     setDialog('facecast');
   }
 
-  async function toggleRecord() {
+async function toggleRecord() {
+    if (!canRecord) return;
     if (recorderRef.current) {
-      const blob = await recorderRef.current.stop();
+      toast('Finishing 4 playable videos...');
+      const bundle = await recorderRef.current.stop();
       recorderRef.current = null;
       setRecording(false);
-      if (blob.size) {
-        downloadBlob(blob, `facecast-${code}.webm`);
-        toast('FaceCast saved to your downloads.');
-      } else toast('Recording was empty.');
+      publishCast(castRef.current, false);
+      const total = bundle.host.size + bundle.room.size + bundle.screen.size + bundle.chat.size;
+      if (!total) {
+        toast('Recording was empty - try again for at least a few seconds.');
+        return;
+      }
+      const files = recordFiles(bundle, code);
+      setRecordReady(files);
+      setDialog('recordings');
+      try {
+        await downloadRecordZip(bundle, code);
+        toast('ZIP downloaded. Preview below if your PC will not open WebM.');
+      } catch {
+        toast('ZIP pack failed - use Save on each preview instead.');
+      }
       return;
     }
     openFaceCast();
   }
 
+
   function startFaceCast(next: RecordCast) {
-    if (!stageRef.current) return;
+    if (!canRecord || !stageRef.current) return;
     castRef.current = next;
     setCastIds(next.peerIds);
     setCastScreens(next.includeScreens);
-    const recorder = createRecorder(stageRef.current, () => audioTracksRef.current(), next);
+    const recorder = createRecorder(stageRef.current, () => audioTracksRef.current(), next, {
+      getHostId: () => hostIdRef.current,
+      getChat: () =>
+        chatRef.current.map((message) => ({
+          name: message.name,
+          text: message.text,
+          ts: message.ts,
+          system: message.system,
+        })),
+    });
     if (!recorder) {
       toast('This browser cannot record the meeting.');
       return;
@@ -541,15 +624,35 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     recorderRef.current = recorder;
     setRecording(true);
     setDialog(null);
-    toast(`FaceCast started with ${next.peerIds.length} people. Change who is included anytime.`);
+    publishCast(next, true);
+    toast('Recording 4 cuts: host, room, screen, chat. Stop to download the ZIP.');
   }
 
-  function applyCast(next: RecordCast) {
+  function applyCast(next: RecordCast, broadcast = true) {
     castRef.current = next;
     setCastIds(next.peerIds);
     setCastScreens(next.includeScreens);
     recorderRef.current?.setCast(next);
+    if (broadcast && canRecord && recording) publishCast(next, true);
   }
+
+  function toggleCastPerson(id: string) {
+    const current = castRef.current;
+    const peerIds = current.peerIds.includes(id)
+      ? current.peerIds.filter((item) => item !== id)
+      : [...current.peerIds, id];
+    applyCast({ ...current, peerIds });
+  }
+
+  hostCastHandler.current = (cast, active) => {
+    if (recording && canRecord) return;
+    if (!active) {
+      if (recording) toast('FaceCast direction stopped.');
+      return;
+    }
+    applyCast(cast, false);
+    if (recording) toast('FaceCast people updated by host/co-host.');
+  };
 
   async function toggleFullscreen() {
     try {
@@ -639,6 +742,24 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  const catchUpEvents = useMemo(() => {
+    const hands = [
+      ...(hand ? [name] : []),
+      ...peers.filter((peer) => peer.hand).map((peer) => peer.name),
+    ];
+    return buildCatchUp({
+      joinedAt,
+      chat,
+      airtime: {},
+      names: Object.fromEntries([[myId, name], ...peers.map((peer) => [peer.id, peer.name] as const)]),
+      hands,
+      sharing: [
+        ...(sharing ? [name] : []),
+        ...peers.filter((peer) => peer.sharing).map((peer) => peer.name),
+      ],
+    });
+  }, [chat, hand, joinedAt, myId, name, peers, sharing]);
+
   const youTile: TileModel = {
     key: `cam:${myId}`,
     peerId: myId,
@@ -711,7 +832,19 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
   function renderTile(tile: TileModel) {
     const slow = tile.connection && tile.connection !== 'connected' && now - (seenAt.current[tile.peerId] || now) > 8000;
     const role =
-      tile.kind === 'screen' ? 'Screen' : tile.you ? (isHost ? 'Host' : 'You') : tile.peerId === hostId ? 'Host' : 'Guest';
+      tile.kind === 'screen'
+        ? 'Screen'
+        : tile.you
+          ? isHost
+            ? 'Host'
+            : isCoHost
+              ? 'Co-host'
+              : 'You'
+          : tile.peerId === hostId
+            ? 'Host'
+            : coHostIds.includes(tile.peerId)
+              ? 'Co-host'
+              : 'Guest';
     return (
       <Tile
         key={tile.key}
@@ -735,16 +868,16 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     recorders.length === 0
       ? ''
       : recording
-        ? `FaceCast · ${castIds.length} face${castIds.length === 1 ? '' : 's'}`
+        ? `FaceCast \u00b7 ${castIds.length} face${castIds.length === 1 ? '' : 's'}`
         : `${recorders.join(', ')} recording`;
   const serverMessage =
     status === 'connected'
       ? ''
       : status === 'reconnecting'
-        ? 'Reconnecting to the meeting server…'
+        ? 'Reconnecting to the meeting server\u2026'
         : now - downSince.current > 8000
           ? 'Cannot reach the meeting server. Keep the terminal that started the app open, then refresh.'
-          : 'Connecting to the meeting server…';
+          : 'Connecting to the meeting server\u2026';
   const sharers = [
     sharing ? 'You are sharing your screen' : null,
     ...peers.filter((peer) => peer.sharing).map((peer) => `${peer.name} is sharing their screen`),
@@ -755,12 +888,45 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
       <main className="home kicked">
         <section className="card narrow">
           <h1>{kickedBy} removed you from the meeting</h1>
-          <p>You can join again with the same link.</p>
+          <p>You can join again with the same link · the host will need to admit you again.</p>
           <button type="button" className="primary" onClick={onLeave}>
             Back to home
           </button>
         </section>
       </main>
+    );
+  }
+
+  if (gate === 'denied') {
+    return (
+      <main className="home kicked">
+        <section className="card narrow">
+          <h1>The host did not let you in</h1>
+          <p>Ask them for a new invite, or try again later.</p>
+          <button type="button" className="primary" onClick={onLeave}>
+            Back to home
+          </button>
+        </section>
+      </main>
+    );
+  }
+
+  if (gate === 'waiting' || gate === 'connecting') {
+    return (
+      <WaitingRoom
+        code={code}
+        name={name}
+        gate={gate}
+        stream={stream}
+        camOn={camOn}
+        micOn={micOn}
+        theme={settings.theme}
+        onTheme={(theme) => onSettings({ ...settings, theme })}
+        onCam={() => setCamOn((value) => !value)}
+        onMic={() => setMicOn((value) => !value)}
+        onLeave={onLeave}
+        onCopy={() => void copyLink()}
+      />
     );
   }
 
@@ -770,50 +936,114 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
     cameras.find((tile) => !tile.you) ||
     cameras[0];
   const otherTiles = cameras.filter((tile) => tile.key !== mainTile.key);
+  const raisedHands = [
+    ...(hand ? [{ id: myId, name: `${name} (You)` }] : []),
+    ...peers.filter((peer) => peer.hand).map((peer) => ({ id: peer.id, name: peer.name })),
+  ];
+  const handPill =
+    raisedHands.length === 0
+      ? null
+      : raisedHands.length === 1
+        ? raisedHands[0].name.replace(' (You)', '')
+        : `${raisedHands[0].name.replace(' (You)', '')} +${raisedHands.length - 1}`;
 
   return (
-    <main className="room" ref={roomRef}>
+    <main className="room room-meet" ref={roomRef}>
       <header className="topbar">
         <div className="top-id">
           <Logo size={22} />
-          <strong>QuickMeet</strong>
-          <code>{code}</code>
+          <strong>LetsConnect</strong>
+          <code className="meet-code">{code}</code>
           <button type="button" className="secondary slim" onClick={() => void copyLink()}>
             Copy link
           </button>
         </div>
         <div className="top-mid">
-          <span className="time">Time {formatElapsed(now - started.current)}</span>
-          {isHost ? <span className="pill">You are the host</span> : hostPeer ? <span className="pill">Host: {hostPeer.name}</span> : null}
+          <span className="time">{formatElapsed(now - started.current)}</span>
+          {isHost ? (
+            <span className="pill">Host</span>
+          ) : isCoHost ? (
+            <span className="pill">Co-host</span>
+          ) : hostPeer ? (
+            <span className="pill">Host: {hostPeer.name}</span>
+          ) : null}
           {recordingText && (
             <span className="recpill">
               <i />
               {recordingText}
             </span>
           )}
-          <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-        </div>
-        <div className="seg" aria-label="Layout">
-          {screens.length ? (
-            <span className="pill">Presentation</span>
-          ) : (
-            <>
-              <button type="button" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}>
-                Grid
-              </button>
-              <button type="button" aria-pressed={layout === 'speaker'} onClick={() => setLayout('speaker')}>
-                Speaker
-              </button>
-              <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
-                Sidebar
-              </button>
-            </>
+          {handPill && (
+            <button type="button" className="hand-pill" title="Hands raised" onClick={() => setPanel('people')}>
+              <IconHand />
+              <span>{handPill}</span>
+            </button>
           )}
+        </div>
+        <div className="top-actions">
+          <button
+            type="button"
+            className={panel === 'catchup' ? 'top-icon on' : 'top-icon'}
+            title="Catch-Up"
+            onClick={() => setPanel((value) => (value === 'catchup' ? null : 'catchup'))}
+          >
+            Catch-Up
+          </button>
+          <button
+            type="button"
+            className={panel === 'people' ? 'top-icon on' : 'top-icon'}
+            title="People"
+            onClick={() => setPanel((value) => (value === 'people' ? null : 'people'))}
+          >
+            <IconPeople />
+            <em>{peers.length + 1}</em>
+          </button>
+          <button
+            type="button"
+            className={panel === 'chat' ? 'top-icon on' : 'top-icon'}
+            title="Chat"
+            onClick={() => setPanel((value) => (value === 'chat' ? null : 'chat'))}
+          >
+            <IconChat />
+            {unread > 0 && <em className="badge">{unread}</em>}
+          </button>
+          <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+          <div className="seg" aria-label="Layout">
+            {screens.length ? (
+              <span className="pill">Presentation</span>
+            ) : (
+              <>
+                <button type="button" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}>
+                  Grid
+                </button>
+                <button type="button" aria-pressed={layout === 'speaker'} onClick={() => setLayout('speaker')}>
+                  Speaker
+                </button>
+                <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
+                  Sidebar
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
       <div className="banners">
         {serverMessage && <div className="banner warn">{serverMessage}</div>}
+        {canModerate && waiting.length > 0 && (
+          <AdmitBanner
+            waiting={waiting}
+            onReview={() => setPanel('people')}
+            onAdmit={admit}
+            onDeny={deny}
+            onAdmitAll={() => waiting.forEach((person) => admit(person.id))}
+          />
+        )}
+        {!canRecord && hostCastActive && !recording && (
+          <div className="banner info">
+            <span>A host or co-host is directing FaceCast · only their chosen faces go into the marketing cut.</span>
+          </div>
+        )}
         {hear && (
           <div className="banner ask">
             <span>Click to hear other people.</span>
@@ -841,7 +1071,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
         )}
         {peers.length === 0 && !hideAlone && (
           <div className="banner info">
-            <span>You are the only person here. Copy the link and send it to the people you want.</span>
+            <span>You are the host. Copy the link · people who open it wait until you admit them.</span>
             <button type="button" onClick={() => void copyLink()}>
               Copy link
             </button>
@@ -856,7 +1086,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
             <button
               type="button"
               onClick={() => {
-                sessionStorage.setItem('qm-tip', '1');
+                sessionStorage.setItem('lc-tip', '1');
                 setHideTip(true);
               }}
             >
@@ -930,7 +1160,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
             <PollCard
               poll={poll}
               myId={myId}
-              canEnd={poll.owner === myId || isHost}
+              canEnd={poll.owner === myId || canModerate}
               onVote={vote}
               onEnd={endPoll}
               onHide={() => setPollHidden(true)}
@@ -939,19 +1169,25 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
         </div>
 
         {panel && (
-          <aside className="side" aria-label={panel === 'chat' ? 'Chat' : 'People'}>
+          <aside className="side" aria-label={panel === 'chat' ? 'Chat' : panel === 'catchup' ? 'Catch-Up' : 'People'}>
             <div className="side-tabs">
+              <button type="button" aria-pressed={panel === 'catchup'} onClick={() => setPanel('catchup')}>
+                Catch-Up
+              </button>
               <button type="button" aria-pressed={panel === 'chat'} onClick={() => setPanel('chat')}>
                 Chat
               </button>
               <button type="button" aria-pressed={panel === 'people'} onClick={() => setPanel('people')}>
-                People ({peers.length + 1})
+                People ({peers.length + 1}
+                {canModerate && waiting.length ? ` · ${waiting.length} waiting` : ''})
               </button>
               <button type="button" className="textbtn" onClick={() => setPanel(null)}>
                 Close
               </button>
             </div>
-            {panel === 'chat' ? (
+            {panel === 'catchup' ? (
+              <CatchUpPanel events={catchUpEvents} onOpenChat={() => setPanel('chat')} />
+            ) : panel === 'chat' ? (
               <div className="chat">
                 <div className="messages">
                   {chat.length === 0 && <p className="empty">No messages yet. Say hello.</p>}
@@ -994,8 +1230,12 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
                 youHand={hand}
                 youSharing={sharing}
                 isHost={isHost}
+                canModerate={canModerate}
+                hostId={hostId}
+                coHostIds={coHostIds}
                 myId={myId}
                 peers={peers}
+                waiting={waiting}
                 confirmRemove={confirmRemove}
                 onConfirm={setConfirmRemove}
                 onPin={(id) => setPin((current) => (current === `cam:${id}` ? null : `cam:${id}`))}
@@ -1003,11 +1243,29 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
                 onRetry={retry}
                 onModerate={moderate}
                 onKick={kick}
+                onAdmit={admit}
+                onDeny={deny}
+                onCohost={setCohost}
               />
             )}
           </aside>
         )}
       </div>
+
+      {canRecord && recording && (
+        <CastDirector
+          people={[
+            { id: myId, name: `${name} (You)` },
+            ...peers.map((peer) => ({ id: peer.id, name: peer.name })),
+          ]}
+          selected={castIds}
+          includeScreens={castScreens}
+          hasScreens={sharing || peers.some((peer) => peer.sharing)}
+          onToggle={toggleCastPerson}
+          onScreens={() => applyCast({ ...castRef.current, includeScreens: !castRef.current.includeScreens })}
+          onOpen={() => openFaceCast()}
+        />
+      )}
 
       {peers.map((peer) => (
         <RemoteAudio key={peer.id} stream={peer.audio} sinkId={settings.speakerId} onBlocked={() => setHear(true)} />
@@ -1040,7 +1298,14 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
           </Cmd>
         </div>
         <div className="cgroup">
-          <Cmd label={hand ? 'Lower' : 'Hand'} shortcut="H" live={hand} pressed={hand} onClick={() => setHand((value) => !value)}>
+          <Cmd
+            label={hand ? 'Lower' : 'Hand'}
+            shortcut="H"
+            live={hand}
+            pressed={hand}
+            tone={hand ? 'hand' : undefined}
+            onClick={() => setHand((value) => !value)}
+          >
             <IconHand />
           </Cmd>
           <div className="cmdwrap">
@@ -1067,11 +1332,20 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
             )}
           </div>
           <Cmd
-            label={captionsOn ? 'On' : 'Captions'}
+            label={captionsOn ? 'Captions on' : 'Captions'}
             shortcut="K"
             live={captionsOn}
             pressed={captionsOn}
-            onClick={() => setCaptionsOn((value) => !value)}
+            onClick={() => {
+              if (!captionsOn && !captionSupported) {
+                toast('Live captions need Chrome or Edge on HTTPS.');
+                return;
+              }
+              if (!captionsOn && !micOn) {
+                toast('Turn your mic on so captions can hear you.');
+              }
+              setCaptionsOn((value) => !value);
+            }}
           >
             <IconCaptions />
           </Cmd>
@@ -1112,98 +1386,147 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
             </Cmd>
             {popover === 'more' && (
               <div className="popover more-pop" role="menu">
+                {canRecord && (
+                  <>
+                    <p className="more-label">Record</p>
+                    <MenuButton
+                      icon={<IconRecord />}
+                      title={recording ? 'Stop & download ZIP' : 'FaceCast'}
+                      hint={recording ? '4 videos: host, room, screen, chat' : 'Record 4 marketing cuts'}
+                      danger={recording}
+                      onClick={() => {
+                        setPopover(null);
+                        void toggleRecord();
+                      }}
+                    />
+                    {recording && (
+                      <MenuButton
+                        icon={<IconPeople />}
+                        title="Edit cast"
+                        hint="Who appears in the file"
+                        onClick={() => {
+                          setPopover(null);
+                          openFaceCast();
+                        }}
+                      />
+                    )}
+                  </>
+                )}
+                <p className="more-label">View</p>
                 <MenuButton
-                  title={recording ? 'Stop FaceCast' : 'FaceCast recording'}
-                  detail="Pick host, guests, or anyone — only their faces go in the file"
+                  icon={<IconExpand />}
+                  title="Full screen"
+                  hint="F"
                   onClick={() => {
                     setPopover(null);
-                    void toggleRecord();
+                    void toggleFullscreen();
                   }}
                 />
-                {recording && (
+                <MenuButton
+                  icon={<IconPip />}
+                  title="Pop-out video"
+                  hint="Keep me on top"
+                  onClick={() => {
+                    setPopover(null);
+                    void popOut();
+                  }}
+                />
+                {(canModerate || poll) && <p className="more-label">Meeting</p>}
+                {canModerate && (
                   <MenuButton
-                    title="Change FaceCast people"
-                    detail="Add or remove faces while the recording keeps going"
+                    icon={<IconPoll />}
+                    title={poll ? 'New poll' : 'Start poll'}
+                    hint="Quick vote"
                     onClick={() => {
                       setPopover(null);
-                      openFaceCast();
+                      setDialog('poll');
                     }}
                   />
                 )}
-                <MenuButton title="Full screen" detail="Fill this display" onClick={() => void toggleFullscreen()} />
-                <MenuButton title="Pop out my video" detail="A small window that stays on top" onClick={() => void popOut()} />
-                <MenuButton
-                  title={poll ? 'Start a new poll' : 'Start a poll'}
-                  detail="Everyone can vote, and the counts stay visible"
-                  onClick={() => {
-                    setPopover(null);
-                    setDialog('poll');
-                  }}
-                />
                 {poll && (
                   <MenuButton
+                    icon={<IconPoll />}
                     title={pollHidden ? 'Show poll' : 'Hide poll'}
-                    detail={poll.question}
+                    hint={poll.question}
                     onClick={() => {
                       setPollHidden((value) => !value);
                       setPopover(null);
                     }}
                   />
                 )}
+                <p className="more-label">Settings</p>
                 <MenuButton
-                  title="Audio and video settings"
-                  detail="Microphone, camera, speaker, and your name"
+                  icon={<IconGear />}
+                  title="Devices"
+                  hint="Mic, camera, speaker"
                   onClick={() => {
                     setPopover(null);
                     setDialog('settings');
                   }}
                 />
                 <MenuButton
-                  title="Keyboard shortcuts"
-                  detail="The letter keys that run each control"
+                  icon={<IconKeys />}
+                  title="Shortcuts"
+                  hint="Keyboard keys"
                   onClick={() => {
                     setPopover(null);
                     setDialog('shortcuts');
                   }}
                 />
+                {canModerate && (
+                  <MenuButton
+                    icon={<IconInfo />}
+                    title="Meeting info"
+                    hint="Code & invite link"
+                    onClick={() => {
+                      setPopover(null);
+                      setDialog('details');
+                    }}
+                  />
+                )}
                 <MenuButton
-                  title="Meeting details"
-                  detail="Code, invite link, and connection"
-                  onClick={() => {
-                    setPopover(null);
-                    setDialog('details');
-                  }}
-                />
-                <MenuButton
-                  title={settings.sounds ? 'Sound alerts on' : 'Sound alerts off'}
-                  detail="A soft sound when someone joins or chats"
+                  icon={<IconBell />}
+                  title={settings.sounds ? 'Sounds on' : 'Sounds off'}
+                  hint="Join & chat alerts"
                   onClick={() => onSettings({ ...settings, sounds: !settings.sounds })}
                 />
               </div>
             )}
           </div>
         </div>
-        <div className="cmdwrap">
-          <button
-            type="button"
-            className="leave"
-            aria-keyshortcuts="L"
-            onClick={() => setPopover((value) => (value === 'leave' ? null : 'leave'))}
-          >
-            <IconLeave />
-            Leave
-          </button>
-          {popover === 'leave' && (
-            <div className="popover confirm" role="dialog" aria-label="Leave meeting">
-              <p>Leave this meeting?</p>
-              <button type="button" className="primary danger-btn" onClick={onLeave}>
-                Leave now
-              </button>
-              <button type="button" className="secondary" onClick={() => setPopover(null)}>
-                Stay
-              </button>
-            </div>
-          )}
+        <div className="cgroup leave-group">
+          <div className="cmdwrap">
+            <button
+              type="button"
+              className="leave"
+              aria-label="Leave"
+              title="Leave (L)"
+              aria-keyshortcuts="L"
+              onClick={() => setPopover((value) => (value === 'leave' ? null : 'leave'))}
+            >
+              <IconLeave />
+              <span>Leave</span>
+            </button>
+            {popover === 'leave' && (
+              <div className="popover confirm leave-confirm" role="dialog" aria-label="Leave meeting">
+                <div className="leave-confirm-icon" aria-hidden="true">
+                  <IconLeave />
+                </div>
+                <div className="leave-confirm-copy">
+                  <strong>Leave meeting?</strong>
+                  <p>You can rejoin anytime with the same link.</p>
+                </div>
+                <div className="leave-confirm-actions">
+                  <button type="button" className="secondary leave-stay" onClick={() => setPopover(null)}>
+                    Stay
+                  </button>
+                  <button type="button" className="primary danger-btn leave-go" onClick={onLeave}>
+                    Leave
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </footer>
 
@@ -1224,7 +1547,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
         />
       )}
       {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
-      {dialog === 'details' && (
+      {dialog === 'details' && canModerate && (
         <DetailsDialog
           code={code}
           isHost={isHost}
@@ -1236,7 +1559,7 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
           onClose={() => setDialog(null)}
         />
       )}
-      {dialog === 'poll' && (
+      {dialog === 'poll' && canModerate && (
         <PollDialog
           onClose={() => setDialog(null)}
           onCreate={(question, options) => {
@@ -1245,15 +1568,24 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
           }}
         />
       )}
-      {dialog === 'facecast' && (
+      {dialog === 'recordings' && recordReady && (
+        <RecordingsDialog files={recordReady} onClose={() => setDialog(null)} />
+      )}
+      {dialog === 'facecast' && canRecord && (
         <FaceCastDialog
           recording={recording}
           people={[
-            { id: myId, name, role: isHost ? 'Host' : 'You', you: true },
+            {
+              id: myId,
+              name,
+              role: isHost ? 'Host' : isCoHost ? 'Co-host' : 'You',
+              you: true,
+            },
             ...peers.map((peer) => ({
               id: peer.id,
               name: peer.name,
-              role: peer.id === hostId ? 'Host' : 'Guest',
+              role:
+                peer.id === hostId ? 'Host' : coHostIds.includes(peer.id) ? 'Co-host' : 'Guest',
               you: false,
             })),
           ]}
@@ -1263,13 +1595,14 @@ export function MeetingScreen({ code, settings, initialStream, onSettings, onLea
           onClose={() => setDialog(null)}
           onConfirm={(next) => {
             if (recording) {
-              applyCast(next);
+              applyCast(next, true);
               setDialog(null);
-              toast('FaceCast people updated.');
+              toast('FaceCast cut updated · file follows this live.');
               return;
             }
             startFaceCast(next);
           }}
+          director
         />
       )}
     </main>
@@ -1282,6 +1615,7 @@ function Cmd({
   pressed,
   danger,
   live,
+  tone,
   badge,
   onClick,
   children,
@@ -1291,6 +1625,7 @@ function Cmd({
   pressed?: boolean;
   danger?: boolean;
   live?: boolean;
+  tone?: 'hand';
   badge?: number;
   onClick: () => void;
   children: ReactNode;
@@ -1298,7 +1633,7 @@ function Cmd({
   return (
     <button
       type="button"
-      className={cx('cmd', danger && 'danger', live && 'live')}
+      className={cx('cmd', danger && 'danger', live && 'live', tone === 'hand' && 'hand-live')}
       aria-pressed={pressed}
       aria-keyshortcuts={shortcut}
       title={shortcut ? `${label} (${shortcut})` : label}
@@ -1311,12 +1646,113 @@ function Cmd({
   );
 }
 
-function MenuButton({ title, detail, onClick }: { title: string; detail: string; onClick: () => void }) {
+function MenuButton({
+  icon,
+  title,
+  hint,
+  danger,
+  onClick,
+}: {
+  icon: ReactNode;
+  title: string;
+  hint?: string;
+  danger?: boolean;
+  onClick: () => void;
+}) {
   return (
-    <button type="button" className="menu-row" onClick={onClick}>
-      <strong>{title}</strong>
-      <small>{detail}</small>
+    <button type="button" className={danger ? 'menu-row danger' : 'menu-row'} onClick={onClick}>
+      <span className="menu-ico" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="menu-copy">
+        <strong>{title}</strong>
+        {hint ? <small>{hint}</small> : null}
+      </span>
     </button>
+  );
+}
+
+function MenuSvg({ children }: { children: ReactNode }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+}
+
+function IconRecord() {
+  return (
+    <MenuSvg>
+      <circle cx="12" cy="12" r="7" />
+      <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
+    </MenuSvg>
+  );
+}
+
+function IconExpand() {
+  return (
+    <MenuSvg>
+      <path d="M9 3H3v6" />
+      <path d="M15 3h6v6" />
+      <path d="M21 15v6h-6" />
+      <path d="M3 15v6h6" />
+    </MenuSvg>
+  );
+}
+
+function IconPip() {
+  return (
+    <MenuSvg>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <rect x="12" y="11" width="7" height="6" rx="1" />
+    </MenuSvg>
+  );
+}
+
+function IconPoll() {
+  return (
+    <MenuSvg>
+      <path d="M5 19V10" />
+      <path d="M12 19V5" />
+      <path d="M19 19v-7" />
+    </MenuSvg>
+  );
+}
+
+function IconGear() {
+  return (
+    <MenuSvg>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </MenuSvg>
+  );
+}
+
+function IconKeys() {
+  return (
+    <MenuSvg>
+      <rect x="3" y="7" width="18" height="12" rx="2" />
+      <path d="M7 11h2M11 11h2M15 11h2M8 15h8" />
+    </MenuSvg>
+  );
+}
+
+function IconInfo() {
+  return (
+    <MenuSvg>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 10v6" />
+      <circle cx="12" cy="7" r="0.8" fill="currentColor" stroke="none" />
+    </MenuSvg>
+  );
+}
+
+function IconBell() {
+  return (
+    <MenuSvg>
+      <path d="M7 10a5 5 0 0 1 10 0c0 4 1.5 5 1.5 5H5.5S7 14 7 10z" />
+      <path d="M10 18a2 2 0 0 0 4 0" />
+    </MenuSvg>
   );
 }
 
@@ -1428,19 +1864,33 @@ function Tile({
       )}
       {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen…</p>}
       {casted && <div className="castflag">In FaceCast</div>}
-      {tile.hand && (
-        <div className="hand-badge" title="Hand raised" aria-label="Hand raised">
-          <IconHand />
+      {(tile.hand || (tile.kind === 'camera' && !tile.micOn)) && (
+        <div className="tile-badges">
+          {tile.kind === 'camera' && !tile.micOn && (
+            <div className="mute-badge" title="Muted" aria-label="Muted">
+              <IconMicOff />
+            </div>
+          )}
+          {tile.hand && (
+            <div className="hand-badge" title="Hand raised" aria-label="Hand raised">
+              <IconHand />
+              <span>Hand raised</span>
+            </div>
+          )}
         </div>
       )}
       <div className="nameplate">
+        {tile.kind === 'camera' && !tile.micOn && (
+          <span className="nameplate-mic" aria-hidden="true">
+            <IconMicOff />
+          </span>
+        )}
         <span>
           {tile.name}
           {tile.you && tile.kind === 'camera' ? ' (You)' : ''}
-          {tile.kind === 'camera' ? ` · ${role}` : ''}
-          {tile.kind === 'camera' && !tile.micOn ? ' · Muted' : ''}
-          {tile.speaking ? ' · Speaking' : ''}
-          {pinned ? ' · Pinned' : ''}
+          {tile.kind === 'camera' ? ` \u00b7 ${role}` : ''}
+          {tile.speaking ? ' \u00b7 Speaking' : ''}
+          {pinned ? ' \u00b7 Pinned' : ''}
         </span>
       </div>
       {connecting && (
@@ -1492,8 +1942,12 @@ function PeopleList({
   youHand,
   youSharing,
   isHost,
+  canModerate,
+  hostId,
+  coHostIds,
   myId,
   peers,
+  waiting,
   confirmRemove,
   onConfirm,
   onPin,
@@ -1501,6 +1955,9 @@ function PeopleList({
   onRetry,
   onModerate,
   onKick,
+  onAdmit,
+  onDeny,
+  onCohost,
 }: {
   youName: string;
   youMic: boolean;
@@ -1508,8 +1965,12 @@ function PeopleList({
   youHand: boolean;
   youSharing: boolean;
   isHost: boolean;
+  canModerate: boolean;
+  hostId: string | null;
+  coHostIds: string[];
   myId: string;
   peers: RemotePeer[];
+  waiting: { id: string; name: string }[];
   confirmRemove: string | null;
   onConfirm: (id: string | null) => void;
   onPin: (id: string) => void;
@@ -1517,14 +1978,60 @@ function PeopleList({
   onRetry: (id: string) => void;
   onModerate: (id: string, action: 'mute-mic' | 'mute-cam' | 'ask-mic' | 'ask-cam') => void;
   onKick: (id: string) => void;
+  onAdmit: (id: string) => void;
+  onDeny: (id: string) => void;
+  onCohost: (id: string, on: boolean) => void;
 }) {
   const rows = [
-    { id: myId, name: `${youName} (You)`, micOn: youMic, camOn: youCam, hand: youHand, sharing: youSharing, you: true, connection: 'connected' as const },
+    {
+      id: myId,
+      name: youName,
+      micOn: youMic,
+      camOn: youCam,
+      hand: youHand,
+      sharing: youSharing,
+      you: true,
+      connection: 'connected' as const,
+    },
     ...peers.map((peer) => ({ ...peer, you: false })),
   ];
   const hands = rows.filter((row) => row.hand);
   return (
     <div className="people">
+      {canModerate && waiting.length > 0 && (
+        <div className="admit-panel">
+          <div className="admit-panel-head">
+            <strong>Waiting to join</strong>
+            <span>{waiting.length}</span>
+          </div>
+          <ul className="admit-list">
+            {waiting.map((person) => (
+              <li key={person.id} className="admit-card">
+                <span className="avatar sm" style={{ background: colorFor(person.name) }}>
+                  {initials(person.name)}
+                </span>
+                <div className="admit-meta">
+                  <strong>{person.name}</strong>
+                  <small>Knocking at the door</small>
+                </div>
+                <div className="admit-actions">
+                  <button type="button" className="admit-yes" onClick={() => onAdmit(person.id)}>
+                    Admit
+                  </button>
+                  <button type="button" className="admit-no" onClick={() => onDeny(person.id)}>
+                    Deny
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {waiting.length > 1 && (
+            <button type="button" className="admit-all" onClick={() => waiting.forEach((person) => onAdmit(person.id))}>
+              Admit everyone
+            </button>
+          )}
+        </div>
+      )}
       {hands.length > 0 && (
         <div className="hands">
           <strong>Hands raised ({hands.length})</strong>
@@ -1535,67 +2042,167 @@ function PeopleList({
           </ul>
         </div>
       )}
-      {rows.map((row) => (
-        <article key={row.id} className="person">
-          <div className="avatar sm" style={{ background: colorFor(row.you ? youName : row.name) }}>
-            {initials(row.you ? youName : row.name)}
-          </div>
-          <div className="person-main">
-            <strong>{row.name}</strong>
-            <span>
-              {[
-                row.connection !== 'connected' ? (row.connection === 'failed' ? 'Cannot reach' : 'Connecting') : '',
-                row.micOn ? 'Mic on' : 'Mic off',
-                row.camOn ? 'Camera on' : 'Camera off',
-                row.hand ? 'Hand raised' : '',
-                row.sharing ? 'Sharing' : '',
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </span>
-            <div className="row-actions">
-              <button type="button" onClick={() => onPin(row.id)}>
-                {pin === `cam:${row.id}` ? 'Unpin' : 'Pin'}
-              </button>
-              {!row.you && row.connection !== 'connected' && (
-                <button type="button" onClick={() => onRetry(row.id)}>
-                  Try again
-                </button>
-              )}
-              {isHost && !row.you && row.micOn && (
-                <button type="button" onClick={() => onModerate(row.id, 'mute-mic')}>
-                  Turn mic off
-                </button>
-              )}
-              {isHost && !row.you && !row.micOn && (
-                <button type="button" onClick={() => onModerate(row.id, 'ask-mic')}>
-                  Ask to unmute
-                </button>
-              )}
-              {isHost && !row.you && row.camOn && (
-                <button type="button" onClick={() => onModerate(row.id, 'mute-cam')}>
-                  Turn camera off
-                </button>
-              )}
-              {isHost && !row.you && !row.camOn && (
-                <button type="button" onClick={() => onModerate(row.id, 'ask-cam')}>
-                  Ask for camera
-                </button>
-              )}
-              {isHost && !row.you && confirmRemove !== row.id && (
-                <button type="button" onClick={() => onConfirm(row.id)}>
-                  Remove
-                </button>
-              )}
-              {isHost && confirmRemove === row.id && (
-                <button type="button" className="danger-text" onClick={() => onKick(row.id)}>
-                  Remove {row.name}?
-                </button>
-              )}
+      {rows.map((row) => {
+        const role =
+          row.id === hostId ? 'Host' : coHostIds.includes(row.id) ? 'Co-host' : row.you ? 'You' : 'Guest';
+        const label = row.you ? `${row.name} (You)` : row.name;
+        const canControl =
+          canModerate && !row.you && row.id !== hostId && (isHost || !coHostIds.includes(row.id));
+        return (
+          <article key={row.id} className="person">
+            <div className="avatar sm" style={{ background: colorFor(row.you ? youName : row.name) }}>
+              {initials(row.you ? youName : row.name)}
             </div>
-          </div>
-        </article>
-      ))}
+            <div className="person-main">
+              <div className="person-title">
+                <strong>{label}</strong>
+                <em className={role === 'Host' || role === 'Co-host' ? 'role-badge' : 'role-soft'}>{role}</em>
+              </div>
+              <span>
+                {[
+                  row.connection !== 'connected' ? (row.connection === 'failed' ? 'Cannot reach' : 'Connecting…') : '',
+                  row.micOn ? 'Mic on' : 'Mic off',
+                  row.camOn ? 'Cam on' : 'Cam off',
+                  row.hand ? 'Hand up' : '',
+                  row.sharing ? 'Sharing' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </span>
+              <div className="person-actions">
+                <button type="button" className="pact" onClick={() => onPin(row.id)} title="Pin">
+                  {pin === `cam:${row.id}` ? 'Unpin' : 'Pin'}
+                </button>
+                {!row.you && row.connection !== 'connected' && (
+                  <button type="button" className="pact" onClick={() => onRetry(row.id)} title="Retry connection">
+                    Retry
+                  </button>
+                )}
+                {canControl && (
+                  <button
+                    type="button"
+                    className="pact"
+                    title={row.micOn ? 'Turn microphone off' : 'Ask to unmute'}
+                    onClick={() => onModerate(row.id, row.micOn ? 'mute-mic' : 'ask-mic')}
+                  >
+                    {row.micOn ? 'Mute' : 'Unmute'}
+                  </button>
+                )}
+                {canControl && (
+                  <button
+                    type="button"
+                    className="pact"
+                    title={row.camOn ? 'Turn camera off' : 'Ask for camera'}
+                    onClick={() => onModerate(row.id, row.camOn ? 'mute-cam' : 'ask-cam')}
+                  >
+                    {row.camOn ? 'Cam off' : 'Cam on'}
+                  </button>
+                )}
+                {isHost && !row.you && row.id !== hostId && (
+                  <button
+                    type="button"
+                    className={coHostIds.includes(row.id) ? 'pact on' : 'pact'}
+                    title={coHostIds.includes(row.id) ? 'Remove co-host' : 'Make co-host'}
+                    onClick={() => onCohost(row.id, !coHostIds.includes(row.id))}
+                  >
+                    {coHostIds.includes(row.id) ? 'Co-host ?' : 'Co-host'}
+                  </button>
+                )}
+                {canControl && confirmRemove !== row.id && (
+                  <button type="button" className="pact danger" onClick={() => onConfirm(row.id)} title="Remove">
+                    Remove
+                  </button>
+                )}
+                {canControl && confirmRemove === row.id && (
+                  <button type="button" className="pact danger" onClick={() => onKick(row.id)}>
+                    Confirm?
+                  </button>
+                )}
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function CatchUpPanel({ events, onOpenChat }: { events: CatchUpEvent[]; onOpenChat: () => void }) {
+  return (
+    <div className="catchup">
+      <header className="catchup-head">
+        <h2>Catch-Up</h2>
+        <p>What you missed before joining.</p>
+      </header>
+      {events.length === 0 ? (
+        <p className="empty">Nothing yet ? you are caught up.</p>
+      ) : (
+        <ul className="catchup-list">
+          {events.map((event) => (
+            <li key={event.id} data-kind={event.kind}>
+              <time>
+                {new Date(event.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+              </time>
+              <span>{event.text}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <button type="button" className="secondary" onClick={onOpenChat}>
+        View full notes
+      </button>
+    </div>
+  );
+}
+
+function AdmitBanner({
+  waiting,
+  onReview,
+  onAdmit,
+  onDeny,
+  onAdmitAll,
+}: {
+  waiting: { id: string; name: string }[];
+  onReview: () => void;
+  onAdmit: (id: string) => void;
+  onDeny: (id: string) => void;
+  onAdmitAll: () => void;
+}) {
+  const first = waiting[0];
+  return (
+    <div className="admit-banner" role="status">
+      <div className="admit-banner-avatars" aria-hidden="true">
+        {waiting.slice(0, 3).map((person) => (
+          <span key={person.id} className="avatar xs" style={{ background: colorFor(person.name) }}>
+            {initials(person.name)}
+          </span>
+        ))}
+      </div>
+      <div className="admit-banner-copy">
+        <strong>
+          {waiting.length === 1 ? `${first.name} wants to join` : `${waiting.length} people waiting`}
+        </strong>
+        <span>Admit them to let them into the meeting</span>
+      </div>
+      <div className="admit-banner-actions">
+        {waiting.length === 1 ? (
+          <>
+            <button type="button" className="admit-yes" onClick={() => onAdmit(first.id)}>
+              Admit
+            </button>
+            <button type="button" className="admit-no" onClick={() => onDeny(first.id)}>
+              Deny
+            </button>
+          </>
+        ) : (
+          <button type="button" className="admit-yes" onClick={onAdmitAll}>
+            Admit all
+          </button>
+        )}
+        <button type="button" className="secondary slim" onClick={onReview}>
+          Review
+        </button>
+      </div>
     </div>
   );
 }
@@ -1661,6 +2268,7 @@ function FaceCastDialog({
   hasScreens,
   onClose,
   onConfirm,
+  director,
 }: {
   recording: boolean;
   people: { id: string; name: string; role: string; you: boolean }[];
@@ -1669,6 +2277,7 @@ function FaceCastDialog({
   hasScreens: boolean;
   onClose: () => void;
   onConfirm: (cast: RecordCast) => void;
+  director?: boolean;
 }) {
   const [ids, setIds] = useState(selected);
   const [screens, setScreens] = useState(includeScreens);
@@ -1687,14 +2296,15 @@ function FaceCastDialog({
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header className="modal-head">
-          <h2 id="facecast-title">{recording ? 'Change FaceCast people' : 'FaceCast recording'}</h2>
+          <h2 id="facecast-title">{recording ? 'Live FaceCast cut' : 'FaceCast director'}</h2>
           <button type="button" className="textbtn" onClick={onClose}>
             Close
           </button>
         </header>
         <p className="hint">
-          Pick host, guests, or anyone. Only the faces you choose appear together in the saved video — a cast of people,
-          not the whole screen dump.
+          {director
+            ? 'When you stop, LetsConnect saves a ZIP with 4 videos: host only, host+guests, screen share, and chat.'
+            : 'Pick who belongs in the room cut. You still get host, screen, and chat videos in the ZIP.'}
         </p>
         <div className="cast-actions">
           <button type="button" className="secondary slim" onClick={() => setIds(people.map((person) => person.id))}>
@@ -1762,11 +2372,163 @@ function FaceCastDialog({
               })
             }
           >
-            {recording ? 'Update FaceCast' : 'Start FaceCast'}
+            {recording ? 'Apply cut' : 'Start FaceCast'}
           </button>
         </div>
       </div>
     </div>
+  );
+}
+
+function CastDirector({
+  people,
+  selected,
+  includeScreens,
+  hasScreens,
+  onToggle,
+  onScreens,
+  onOpen,
+}: {
+  people: { id: string; name: string }[];
+  selected: string[];
+  includeScreens: boolean;
+  hasScreens: boolean;
+  onToggle: (id: string) => void;
+  onScreens: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="cast-director" aria-label="FaceCast director">
+      <div className="cast-director-head">
+        <strong>FaceCast cut</strong>
+        <span>Tap to show or hide faces in the recording</span>
+        <button type="button" className="textbtn" onClick={onOpen}>
+          Full list
+        </button>
+      </div>
+      <div className="cast-chips">
+        {people.map((person) => {
+          const on = selected.includes(person.id);
+          return (
+            <button
+              key={person.id}
+              type="button"
+              className={on ? 'cast-chip on' : 'cast-chip'}
+              onClick={() => onToggle(person.id)}
+              title={on ? `Hide ${person.name} from FaceCast` : `Show ${person.name} in FaceCast`}
+            >
+              <span className="avatar xs" style={{ background: colorFor(person.name) }}>
+                {initials(person.name)}
+              </span>
+              {person.name}
+            </button>
+          );
+        })}
+        {hasScreens && (
+          <button type="button" className={includeScreens ? 'cast-chip on' : 'cast-chip'} onClick={onScreens}>
+            Screen share
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function WaitingRoom({
+  code,
+  name,
+  gate,
+  stream,
+  camOn,
+  micOn,
+  theme,
+  onTheme,
+  onCam,
+  onMic,
+  onLeave,
+  onCopy,
+}: {
+  code: string;
+  name: string;
+  gate: 'connecting' | 'waiting';
+  stream: MediaStream | null;
+  camOn: boolean;
+  micOn: boolean;
+  theme: Settings['theme'];
+  onTheme: (theme: Settings['theme']) => void;
+  onCam: () => void;
+  onMic: () => void;
+  onLeave: () => void;
+  onCopy: () => void;
+}) {
+  const previewRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const parent = previewRef.current;
+    if (!parent) return;
+    return mountPreview(parent, stream, {
+      mirror: true,
+      recordOff: !camOn,
+    });
+  }, [camOn, stream]);
+
+  return (
+    <main className="waiting-room">
+      <div className="waiting-glow" aria-hidden="true" />
+      <section className="waiting-shell">
+        <header className="waiting-brand">
+          <Logo size={28} />
+          <div>
+            <strong>LetsConnect</strong>
+            <span>{code}</span>
+          </div>
+          <ThemeButton theme={theme} onChange={onTheme} />
+        </header>
+        <div className="waiting-stage">
+          <div className="waiting-preview">
+            <div className="preview-slot" ref={previewRef} />
+            {!camOn && (
+              <div className="avatar xl" style={{ background: colorFor(name) }}>
+                {initials(name)}
+              </div>
+            )}
+            <div className="waiting-pulse" aria-hidden="true">
+              <i />
+              <i />
+            </div>
+          </div>
+          <div className="waiting-copy">
+            <p className="waiting-kicker">{gate === 'connecting' ? 'Connecting…' : 'Knock sent'}</p>
+            <h1>{gate === 'connecting' ? 'Reaching the room…' : 'Waiting for the host'}</h1>
+            <p>
+              {gate === 'connecting'
+                ? 'One moment while we find the meeting.'
+                : `You'll appear as ${name}. The host or a co-host will let you in.`}
+            </p>
+            {gate === 'waiting' && (
+              <div className="waiting-dots" aria-hidden="true">
+                <span />
+                <span />
+                <span />
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="waiting-toolbar">
+          <button type="button" className={micOn ? 'waiting-toggle' : 'waiting-toggle off'} onClick={onMic}>
+            {micOn ? 'Mic on' : 'Mic off'}
+          </button>
+          <button type="button" className={camOn ? 'waiting-toggle' : 'waiting-toggle off'} onClick={onCam}>
+            {camOn ? 'Camera on' : 'Camera off'}
+          </button>
+          <button type="button" className="waiting-toggle" onClick={onCopy}>
+            Copy link
+          </button>
+          <button type="button" className="primary" onClick={onLeave}>
+            Cancel
+          </button>
+        </div>
+      </section>
+    </main>
   );
 }
 
@@ -1880,7 +2642,11 @@ function DetailsDialog({
           </button>
         </header>
         <p className="code-lg">{code}</p>
-        <p>{isHost ? 'You are the host.' : `Host: ${hostName}.`}</p>
+        <p>
+          {isHost
+            ? 'You are the host. Anyone with the link asks to join · admit or deny them from People.'
+            : `Host: ${hostName}.`}
+        </p>
         <p>Meeting server: {status === 'connected' ? 'Connected' : 'Not connected yet'}.</p>
         <button type="button" className="secondary" onClick={onCopy}>
           Copy invite link
@@ -1908,7 +2674,7 @@ function DetailsDialog({
           {peers.length === 0 && <li>No one else is here yet.</li>}
         </ul>
         <p className="hint">
-          Anyone with the link can join on this Wi‑Fi. Video quality is best under about 12 people on a mesh call; the
+          Anyone with the link can join on this Wi-Fi. Video quality is best under about 12 people on a mesh call; the
           grid supports denser rooms when your network can handle it.
         </p>
       </div>

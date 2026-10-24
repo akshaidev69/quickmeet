@@ -14,7 +14,7 @@ function lanAddresses() {
   return [...new Set(addresses)];
 }
 
-const useLocalHttps = process.env.QUICKMEET_HTTP !== '1' && !process.env.RENDER;
+const useLocalHttps = process.env.LETSCONNECT_HTTP !== '1' && !process.env.RENDER;
 
 export default defineConfig({
   plugins: [
@@ -22,7 +22,7 @@ export default defineConfig({
     ...(useLocalHttps ? [basicSsl()] : []),
     signalPlugin(),
     {
-      name: 'quickmeet-lan',
+      name: 'letsconnect-lan',
       configureServer(server) {
         server.middlewares.use('/api/network', (_req, res) => {
           const port = server.config.server.port || 5173;

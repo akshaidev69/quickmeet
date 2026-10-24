@@ -1,5 +1,5 @@
 {
-  "name": "quickmeet",
+  "name": "letsconnect",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -13,6 +13,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "firebase": "^13.1.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "ws": "^8.18.0"

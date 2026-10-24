@@ -1,8 +1,8 @@
 import type { BackgroundId, RecentMeeting, ScheduledMeeting, Settings, ThemeMode } from '../types';
 
-const settingsKey = 'quickmeet.settings';
-const recentKey = 'quickmeet.recent';
-const scheduleKey = 'quickmeet.schedule';
+const settingsKey = 'LetsConnect.settings';
+const recentKey = 'LetsConnect.recent';
+const scheduleKey = 'LetsConnect.schedule';
 
 function systemTheme(): ThemeMode {
   if (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';

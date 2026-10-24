@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Logo, IconMic, IconMicOff, IconCam, IconCamOff } from './icons';
-import { LookChoices, ThemeButton } from './LookControls';
+import { Logo, IconMic, IconMicOff, IconCam, IconCamOff, IconLook } from './icons';
+import { LookMenu, ThemeButton } from './LookControls';
 import { safeName } from '../lib/code';
-import { acquireMedia } from '../lib/media';
+import { acquireMedia, deviceLabel, listDevices, type DeviceLists } from '../lib/media';
 import { mountPreview } from '../lib/previewVideo';
 import { colorFor, initials } from '../lib/people';
 import { useSelfLook } from '../hooks/useSelfLook';
@@ -23,10 +23,16 @@ export function LobbyScreen({ code, settings, onSettings, onJoin, onBack }: Prop
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [nonce, setNonce] = useState(0);
+  const [lookOpen, setLookOpen] = useState(false);
+  const [devices, setDevices] = useState<DeviceLists>({ mics: [], cams: [], speakers: [] });
   const previewRef = useRef<HTMLDivElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const handed = useRef(false);
   const name = safeName(settings.name);
+
+  useEffect(() => {
+    void listDevices().then(setDevices);
+  }, [nonce, stream]);
 
   useEffect(() => {
     let cancel = false;
@@ -109,82 +115,165 @@ export function LobbyScreen({ code, settings, onSettings, onJoin, onBack }: Prop
   }
 
   return (
-    <main className="lobby">
-      <section className="lobby-stage">
-        <div className="preview">
-          <div className="preview-slot" ref={previewRef} />
-          {(!camOn || !camReady) && (
-            <div className="avatar" style={{ background: colorFor(name) }}>
-              {initials(name)}
+    <main className="lobby meet-lobby">
+      <header className="lobby-top">
+        <div className="lobby-top-brand">
+          <Logo size={26} />
+          <strong>LetsConnect</strong>
+          <code>{code}</code>
+        </div>
+        <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+      </header>
+
+      <div className="lobby-body">
+        <section className="lobby-stage">
+          <div className="preview meet-preview">
+            <div className="preview-slot" ref={previewRef} />
+            {(!camOn || !camReady) && (
+              <div className="preview-empty">
+                {warning ? (
+                  <>
+                    <strong>{camReady ? 'Camera off' : 'Camera unavailable'}</strong>
+                    <p>{warning}</p>
+                    {!camReady && (
+                      <button type="button" className="secondary slim" onClick={() => setNonce((value) => value + 1)}>
+                        Try again
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <div className="avatar" style={{ background: colorFor(name) }}>
+                    {initials(name)}
+                  </div>
+                )}
+              </div>
+            )}
+            <div className="nameplate">
+              <span>
+                {name}
+                {micOn && micReady ? '' : ' · Muted'}
+              </span>
             </div>
-          )}
-          <div className="nameplate">
-            <span>
-              {name}
-              {micOn && micReady ? '' : ' Â· Muted'}
-            </span>
+            <div className="preview-controls">
+              <button
+                type="button"
+                className={micOn && micReady ? 'round-ctl' : 'round-ctl off'}
+                aria-label={micOn ? 'Turn microphone off' : 'Turn microphone on'}
+                onClick={() => (micReady ? setMicOn((value) => !value) : setNonce((value) => value + 1))}
+              >
+                {micOn && micReady ? <IconMic /> : <IconMicOff />}
+              </button>
+              <button
+                type="button"
+                className={camOn && camReady ? 'round-ctl' : 'round-ctl off'}
+                aria-label={camOn ? 'Turn camera off' : 'Turn camera on'}
+                onClick={() => (camReady ? setCamOn((value) => !value) : setNonce((value) => value + 1))}
+              >
+                {camOn && camReady ? <IconCam /> : <IconCamOff />}
+              </button>
+              <div className="cmdwrap">
+                <button
+                  type="button"
+                  className={settings.background !== 'none' || lookOpen ? 'round-ctl live' : 'round-ctl'}
+                  aria-label="Background effects"
+                  onClick={() => setLookOpen((value) => !value)}
+                >
+                  <IconLook />
+                </button>
+                {lookOpen && (
+                  <LookMenu
+                    value={settings.background}
+                    status={look.status}
+                    onChange={(background) => {
+                      onSettings({ ...settings, background });
+                      setLookOpen(false);
+                    }}
+                  />
+                )}
+              </div>
+            </div>
           </div>
-        </div>
-        <LookChoices value={settings.background} onChange={(background) => onSettings({ ...settings, background })} />
-        <p className="stage-hint">Real camera unless you pick a background. It changes only your video.</p>
-        <MicMeter stream={stream} on={micOn && micReady} />
-        <p className="stage-hint">
-          {opening
-            ? 'Checking your microphoneâ€¦'
-            : micOn && micReady
-              ? 'The bar moves when your microphone hears you.'
-              : 'Microphone is off.'}
-        </p>
-      </section>
-      <section className="lobby-panel">
-        <div className="brand">
-          <Logo />
-          <strong>QuickMeet</strong>
-          <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-        </div>
-        <h1>Check your camera, then join</h1>
-        <p className="code-lg">{code}</p>
-        <label className="field">
-          <span>Your name</span>
-          <input
-            value={settings.name}
-            maxLength={40}
-            placeholder="Your name"
-            onChange={(event) => onSettings({ ...settings, name: event.target.value })}
-          />
-        </label>
-        <div className="lobby-actions">
-          <button
-            type="button"
-            className={opening || (micOn && micReady) ? 'toggle' : 'toggle off'}
-            onClick={() => (micReady ? setMicOn((value) => !value) : setNonce((value) => value + 1))}
-          >
-            {micOn && micReady ? <IconMic /> : <IconMicOff />}
-            <span>{opening ? 'Checking micâ€¦' : !micReady ? 'Mic blocked' : micOn ? 'Mic on' : 'Mic off'}</span>
-            <small>
-              {opening ? 'One moment' : micOn && micReady ? 'People will hear you' : 'People will not hear you'}
-            </small>
+
+          <div className="device-row">
+            <label>
+              <span>Microphone</span>
+              <select
+                value={settings.micId}
+                onChange={(event) => {
+                  onSettings({ ...settings, micId: event.target.value });
+                  setNonce((value) => value + 1);
+                }}
+              >
+                <option value="">Default microphone</option>
+                {devices.mics.map((device, index) => (
+                  <option key={device.deviceId || index} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Mic')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Speaker</span>
+              <select
+                value={settings.speakerId}
+                onChange={(event) => onSettings({ ...settings, speakerId: event.target.value })}
+              >
+                <option value="">Default speaker</option>
+                {devices.speakers.map((device, index) => (
+                  <option key={device.deviceId || index} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Speaker')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Camera</span>
+              <select
+                value={settings.camId}
+                onChange={(event) => {
+                  onSettings({ ...settings, camId: event.target.value });
+                  setNonce((value) => value + 1);
+                }}
+              >
+                <option value="">Default camera</option>
+                {devices.cams.map((device, index) => (
+                  <option key={device.deviceId || index} value={device.deviceId}>
+                    {deviceLabel(device, index, 'Camera')}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <MicMeter stream={stream} on={micOn && micReady} />
+        </section>
+
+        <section className="lobby-panel meet-join">
+          <p className="ready-kicker">Meeting · {code}</p>
+          <h1>Ready to join?</h1>
+          <p className="ready-sub">
+            {opening
+              ? 'Checking your camera and microphone…'
+              : 'You will knock first. The host or a co-host admits you into the room.'}
+          </p>
+          <label className="field">
+            <span>Your name</span>
+            <input
+              value={settings.name}
+              maxLength={40}
+              placeholder="How people see you"
+              onChange={(event) => onSettings({ ...settings, name: event.target.value })}
+            />
+          </label>
+          {warning && <p className="warn-text">{warning}</p>}
+          <button type="button" className="primary xl ask-join" disabled={opening} onClick={join}>
+            {opening ? 'Opening camera…' : 'Ask to join'}
           </button>
-          <button
-            type="button"
-            className={opening || (camOn && camReady) ? 'toggle' : 'toggle off'}
-            onClick={() => (camReady ? setCamOn((value) => !value) : setNonce((value) => value + 1))}
-          >
-            {camOn && camReady ? <IconCam /> : <IconCamOff />}
-            <span>{opening ? 'Checking cameraâ€¦' : !camReady ? 'Camera blocked' : camOn ? 'Camera on' : 'Camera off'}</span>
-            <small>
-              {opening ? 'One moment' : camOn && camReady ? 'People will see you' : 'People will not see you'}
-            </small>
+          <button type="button" className="secondary join-other" onClick={onBack}>
+            Other ways to join
           </button>
-        </div>
-        {warning && <p className="warn-text">{warning}</p>}
-        <button type="button" className="primary xl" disabled={opening} onClick={join}>
-          {opening ? 'Opening cameraâ€¦' : 'Join meeting'}
-        </button>
-        <button type="button" className="textbtn back" onClick={onBack}>
-          Back
-        </button>
-      </section>
+          <p className="ready-note">Use headphones if another LetsConnect window is open on this computer.</p>
+        </section>
+      </div>
     </main>
   );
 }
@@ -220,7 +309,7 @@ function MicMeter({ stream, on }: { stream: MediaStream | null; on: boolean }) {
     };
   }, [on, stream]);
   return (
-    <span className="meter" aria-hidden="true">
+    <span className="meter lobby-meter" aria-hidden="true">
       <span ref={bar} />
     </span>
   );

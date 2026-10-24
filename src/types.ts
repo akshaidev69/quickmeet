@@ -26,6 +26,14 @@ export type Poll = {
   owner: string;
 };
 
+export type RecordCastSignal = {
+  peerIds: string[];
+  includeScreens: boolean;
+  includeAudioFromOthers: boolean;
+};
+
+export type WaitingPerson = { id: string; name: string };
+
 export type Signal =
   | { type: 'hello'; from: string; peer: PeerInfo }
   | { type: 'welcome'; from: string; to: string; peer: PeerInfo; chat: ChatMessage[]; poll: Poll | null }
@@ -47,7 +55,8 @@ export type Signal =
     }
   | { type: 'ice'; from: string; to: string; candidate: RTCIceCandidateInit | null }
   | { type: 'poll'; from: string; poll: Poll }
-  | { type: 'vote'; from: string; pollId: string; option: number };
+  | { type: 'vote'; from: string; pollId: string; option: number }
+  | { type: 'cast'; from: string; cast: RecordCastSignal; active: boolean };
 
 export type ThemeMode = 'light' | 'dark';
 
