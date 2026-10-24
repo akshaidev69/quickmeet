@@ -8,42 +8,48 @@ import {
   type User,
 } from 'firebase/auth';
 
-function resolveAuthDomain() {
-  if (typeof window === 'undefined') return 'letsconnect-e8c03.firebaseapp.com';
-  const host = window.location.hostname;
-  // Same-origin auth handler (proxied) so Google shows this site — not firebaseapp.com.
-  if (host && host !== 'localhost' && host !== '127.0.0.1') return host;
-  return 'letsconnect-e8c03.firebaseapp.com';
-}
-
-/** Public Firebase web config (safe in client; override with VITE_* env when needed). */
-const config = {
+const PROJECT = {
   apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) || 'AIzaSyBcP319FVEOh66xsbNLmNNh4kBFBR1vGCo',
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) || resolveAuthDomain(),
   projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) || 'letsconnect-e8c03',
   appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) || '1:183754318076:web:24e296ed563b69c275f779',
   messagingSenderId:
     (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined) || '183754318076',
+  fallbackAuthDomain: 'letsconnect-e8c03.firebaseapp.com',
 };
 
+/** Prefer this site as authDomain so Google shows our host, not firebaseapp.com. */
+function authDomainForBrowser() {
+  if (typeof window === 'undefined') return PROJECT.fallbackAuthDomain;
+  const host = window.location.hostname;
+  if (!host || host === 'localhost' || host === '127.0.0.1') return PROJECT.fallbackAuthDomain;
+  // Ignore VITE_FIREBASE_AUTH_DOMAIN on real hosts — it often forces firebaseapp.com.
+  return host;
+}
+
 export function firebaseConfigured() {
-  return Boolean(config.apiKey && config.authDomain && config.projectId && config.appId);
+  return Boolean(PROJECT.apiKey && PROJECT.projectId && PROJECT.appId);
 }
 
 let app: FirebaseApp | null = null;
 let auth: Auth | null = null;
+let usedAuthDomain = '';
 
 function getFirebaseAuth() {
   if (!firebaseConfigured()) return null;
-  if (!app) {
-    app = initializeApp({
-      apiKey: config.apiKey!,
-      authDomain: config.authDomain!,
-      projectId: config.projectId!,
-      appId: config.appId!,
-      messagingSenderId: config.messagingSenderId,
-    });
+  const authDomain = authDomainForBrowser();
+  if (!app || usedAuthDomain !== authDomain) {
+    app = initializeApp(
+      {
+        apiKey: PROJECT.apiKey,
+        authDomain,
+        projectId: PROJECT.projectId,
+        appId: PROJECT.appId,
+        messagingSenderId: PROJECT.messagingSenderId,
+      },
+      usedAuthDomain ? `lc-${authDomain}` : undefined,
+    );
     auth = getAuth(app);
+    usedAuthDomain = authDomain;
   }
   return auth;
 }

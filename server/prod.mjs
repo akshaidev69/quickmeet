@@ -45,7 +45,7 @@ const server = http.createServer(async (req, res) => {
     if (await handleAuthApi(req, res)) return;
 
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    if (await proxyFirebaseAuth(req, res, url.pathname, url.search)) return;
+    if (await proxyFirebaseAuth(req, res, url.pathname, url.search || '')) return;
     if (url.pathname === '/api/network') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ https: true, port, addresses: [], urls: [] }));
