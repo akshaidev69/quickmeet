@@ -122,11 +122,15 @@ function googleConfigured() {
 }
 
 function firebaseProjectId() {
-  return process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || '';
+  return process.env.FIREBASE_PROJECT_ID || process.env.VITE_FIREBASE_PROJECT_ID || 'letsconnect-e8c03';
 }
 
 function firebaseApiKey() {
-  return process.env.VITE_FIREBASE_API_KEY || process.env.FIREBASE_API_KEY || '';
+  return (
+    process.env.VITE_FIREBASE_API_KEY ||
+    process.env.FIREBASE_API_KEY ||
+    'AIzaSyBcP319FVEOh66xsbNLmNNh4kBFBR1vGCo'
+  );
 }
 
 /** Verify a Firebase Auth ID token via Identity Toolkit (not Google OAuth tokeninfo). */
