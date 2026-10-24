@@ -60,6 +60,7 @@ function AppRoutes() {
   const [schedule, setSchedule] = useState<ScheduledMeeting[]>(loadSchedule);
   const [view, setView] = useState<Phase>('market');
   const [code, setCode] = useState('');
+  const [asHost, setAsHost] = useState(false);
   const [carry, setCarry] = useState<MediaStream | null>(null);
   const [boot, setBoot] = useState(true);
 
@@ -76,6 +77,7 @@ function AppRoutes() {
     if (loading) return;
     const next = routeFromUrl(settings.instantJoin, Boolean(user));
     setCode(next.code);
+    setAsHost(Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1'));
     setView(next.view);
     setBoot(false);
     if (user && (location.pathname === '/login' || location.pathname === '/register')) {
@@ -102,6 +104,7 @@ function AppRoutes() {
       const next = routeFromUrl(loadSettings().instantJoin, Boolean(user));
       setCarry(null);
       setCode(next.code);
+      setAsHost(Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1'));
       setView(next.view);
     };
     window.addEventListener('popstate', onPop);
@@ -123,8 +126,11 @@ function AppRoutes() {
     setView('home');
   }
 
-  async function enter(nextCode: string, title: string, nextView: 'lobby' | 'room') {
+  async function enter(nextCode: string, title: string, nextView: 'lobby' | 'room', role: 'host' | 'guest' = 'guest') {
     const formatted = formatCode(nextCode);
+    const host = role === 'host';
+    if (host) sessionStorage.setItem(`lc-host:${formatted}`, '1');
+    else sessionStorage.removeItem(`lc-host:${formatted}`);
     setRecent(rememberMeeting({ code: formatted, title, ts: Date.now() }));
     try {
       await saveMeeting({ code: formatted, title, startedAt: Date.now(), attendees: 1 });
@@ -137,6 +143,7 @@ function AppRoutes() {
     history.pushState({ view: nextView }, '', url);
     setCarry(null);
     setCode(formatted);
+    setAsHost(host);
     setView(nextView);
   }
 
@@ -154,6 +161,7 @@ function AppRoutes() {
     history.pushState({ view: 'home' }, '', url);
     setCarry(null);
     setCode('');
+    setAsHost(false);
     setView('home');
   }
 
@@ -222,6 +230,7 @@ function AppRoutes() {
       {view === 'lobby' && (
         <LobbyScreen
           code={code}
+          asHost={asHost}
           settings={settings}
           onSettings={setSettings}
           onBack={leave}

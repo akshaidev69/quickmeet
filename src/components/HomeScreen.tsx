@@ -13,7 +13,7 @@ type Props = {
   onSettings: (settings: Settings) => void;
   onForget: (code: string) => void;
   onSchedule: (items: ScheduledMeeting[]) => void;
-  onEnter: (code: string, title: string, view: 'lobby' | 'room') => void;
+  onEnter: (code: string, title: string, view: 'lobby' | 'room', role?: 'host' | 'guest') => void;
   onLogout: () => void;
   onMarketing: () => void;
 };
@@ -107,12 +107,12 @@ export function HomeScreen({
 
   function start() {
     const next = meetingCode();
-    onEnter(next, 'Instant meeting', settings.instantJoin ? 'room' : 'lobby');
+    onEnter(next, 'Instant meeting', settings.instantJoin ? 'room' : 'lobby', 'host');
   }
 
-  function join(nextCode: string, label: string) {
+  function join(nextCode: string, label: string, role: 'host' | 'guest' = 'guest') {
     if (!isFullCode(nextCode)) return;
-    onEnter(formatCode(nextCode), label, settings.instantJoin ? 'room' : 'lobby');
+    onEnter(formatCode(nextCode), label, settings.instantJoin ? 'room' : 'lobby', role);
   }
 
   function createScheduled(event: FormEvent) {
@@ -248,7 +248,7 @@ export function HomeScreen({
                     <code>{item.code}</code>
                   </div>
                   <div className="row-actions">
-                    <button type="button" onClick={() => join(item.code, item.title)}>
+                    <button type="button" onClick={() => join(item.code, item.title, 'host')}>
                       Open
                     </button>
                     <button type="button" onClick={() => void forgetCloud(item.id)}>
@@ -311,7 +311,7 @@ export function HomeScreen({
                     <code>{item.code}</code>
                   </div>
                   <div className="row-actions">
-                    <button type="button" onClick={() => join(item.code, item.title)}>
+                    <button type="button" onClick={() => join(item.code, item.title, 'host')}>
                       Start
                     </button>
                     <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>

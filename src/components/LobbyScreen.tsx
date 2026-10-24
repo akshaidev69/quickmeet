@@ -10,13 +10,14 @@ import type { Settings } from '../types';
 
 type Props = {
   code: string;
+  asHost?: boolean;
   settings: Settings;
   onSettings: (settings: Settings) => void;
   onJoin: (stream: MediaStream) => void;
   onBack: () => void;
 };
 
-export function LobbyScreen({ code, settings, onSettings, onJoin, onBack }: Props) {
+export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin, onBack }: Props) {
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [opening, setOpening] = useState(true);
   const [warning, setWarning] = useState('');
@@ -249,11 +250,13 @@ export function LobbyScreen({ code, settings, onSettings, onJoin, onBack }: Prop
 
         <section className="lobby-panel meet-join">
           <p className="ready-kicker">Meeting · {code}</p>
-          <h1>Ready to join?</h1>
+          <h1>{asHost ? 'Ready to start?' : 'Ready to join?'}</h1>
           <p className="ready-sub">
             {opening
-              ? 'Checking your camera and microphone…'
-              : 'You will knock first. The host or a co-host admits you into the room.'}
+              ? 'Checking your camera and microphone\u2026'
+              : asHost
+                ? 'You are the host. Start the meeting, then share the link ? guests wait until you admit them.'
+                : 'You will knock first. The host or a co-host admits you into the room.'}
           </p>
           <label className="field">
             <span>Your name</span>
@@ -266,10 +269,10 @@ export function LobbyScreen({ code, settings, onSettings, onJoin, onBack }: Prop
           </label>
           {warning && <p className="warn-text">{warning}</p>}
           <button type="button" className="primary xl ask-join" disabled={opening} onClick={join}>
-            {opening ? 'Opening camera…' : 'Ask to join'}
+            {opening ? 'Opening camera\u2026' : asHost ? 'Start meeting' : 'Ask to join'}
           </button>
           <button type="button" className="secondary join-other" onClick={onBack}>
-            Other ways to join
+            {asHost ? 'Back to home' : 'Other ways to join'}
           </button>
           <p className="ready-note">Use headphones if another LetsConnect window is open on this computer.</p>
         </section>
