@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { App as CapApp } from '@capacitor/app';
-import { Browser } from '@capacitor/browser';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
 import { fetchConfig, loginWithFirebaseToken } from '../lib/api';
 import { firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
-import { googleBridgeUrl, isNativeApp, parseNativeAuthUrl } from '../lib/native';
+import {
+  closeExternalBrowser,
+  googleBridgeUrl,
+  isNativeApp,
+  openExternalBrowser,
+  parseNativeAuthUrl,
+} from '../lib/native';
 
 type Mode = 'login' | 'register';
 
@@ -42,11 +47,7 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       const { idToken, error: authError } = parseNativeAuthUrl(url);
       if (!idToken && !authError) return;
       pendingNative.current = false;
-      try {
-        await Browser.close();
-      } catch {
-        /* ignore */
-      }
+      await closeExternalBrowser();
       if (authError || !idToken) {
         setBusy(false);
         setError(authError || 'Google sign-in was cancelled.');
@@ -104,11 +105,7 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       // Open real Chrome Custom Tabs → bridge page → deep-link back with idToken.
       if (isNativeApp()) {
         pendingNative.current = true;
-        await Browser.open({
-          url: googleBridgeUrl(),
-          presentationStyle: 'popover',
-          toolbarColor: '#0b1411',
-        });
+        await openExternalBrowser(googleBridgeUrl());
         return;
       }
 
