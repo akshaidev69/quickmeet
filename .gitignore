@@ -7,3 +7,11 @@ data
 .env.*
 !.env.example
 .gitignore.tmp
+android/app/build
+android/build
+android/.gradle
+android/local.properties
+android/captures
+android/.idea
+*.iml
+release/

@@ -65,33 +65,50 @@ function loadGis(): Promise<void> {
 
 type GisCredentialResponse = { credential?: string };
 
-function requestGoogleIdToken(): Promise<string> {
+type GisIdApi = {
+  initialize: (config: Record<string, unknown>) => void;
+  prompt: (cb?: (notification: {
+    isNotDisplayed: () => boolean;
+    isSkippedMoment: () => boolean;
+    getNotDisplayedReason?: () => string;
+  }) => void) => void;
+  cancel: () => void;
+  renderButton: (parent: HTMLElement, config: Record<string, unknown>) => void;
+};
+
+function getGisId(): GisIdApi | null {
+  const google = (window as Window & { google?: { accounts?: { id?: GisIdApi } } }).google;
+  return google?.accounts?.id || null;
+}
+
+function requestGoogleIdToken(options?: { visible?: boolean; mount?: HTMLElement | null }): Promise<string> {
+  const visible = Boolean(options?.visible);
   return loadGis().then(
     () =>
       new Promise<string>((resolve, reject) => {
-        const google = (window as Window & {
-          google?: {
-            accounts: {
-              id: {
-                initialize: (config: Record<string, unknown>) => void;
-                prompt: (cb?: (notification: { isNotDisplayed: () => boolean; isSkippedMoment: () => boolean; getNotDisplayedReason?: () => string }) => void) => void;
-                cancel: () => void;
-                renderButton: (parent: HTMLElement, config: Record<string, unknown>) => void;
-              };
-            };
-          };
-        }).google;
-        if (!google?.accounts?.id) {
+        const google = getGisId();
+        if (!google) {
           reject(new Error('Google sign-in is unavailable in this browser.'));
           return;
         }
 
         let settled = false;
+        const host = document.createElement('div');
+        if (visible) {
+          host.style.cssText =
+            'display:flex;justify-content:center;margin:12px 0 4px;min-height:44px;width:100%';
+        } else {
+          host.style.cssText =
+            'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+        }
+        const mount = options?.mount || document.body;
+        mount.appendChild(host);
+
         const finish = (err?: Error, token?: string) => {
           if (settled) return;
           settled = true;
           try {
-            google.accounts.id.cancel();
+            google.cancel();
           } catch {
             /* ignore */
           }
@@ -100,12 +117,7 @@ function requestGoogleIdToken(): Promise<string> {
           else resolve(token!);
         };
 
-        // Hidden GIS button click — stays on our origin (no firebaseapp.com handler).
-        const host = document.createElement('div');
-        host.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
-        document.body.appendChild(host);
-
-        google.accounts.id.initialize({
+        google.initialize({
           client_id: GOOGLE_WEB_CLIENT_ID,
           callback: (response: GisCredentialResponse) => {
             if (response?.credential) finish(undefined, response.credential);
@@ -118,7 +130,7 @@ function requestGoogleIdToken(): Promise<string> {
           itp_support: true,
         });
 
-        google.accounts.id.renderButton(host, {
+        google.renderButton(host, {
           type: 'standard',
           theme: 'outline',
           size: 'large',
@@ -129,6 +141,10 @@ function requestGoogleIdToken(): Promise<string> {
         });
 
         window.setTimeout(() => {
+          if (visible) {
+            // Bridge page: wait for the real user tap (Custom Tab / Chrome).
+            return;
+          }
           const btn = host.querySelector('div[role="button"]') as HTMLElement | null;
           if (!btn) {
             finish(new Error('Could not start Google sign-in. Try again.'));
@@ -142,6 +158,11 @@ function requestGoogleIdToken(): Promise<string> {
         }, 120_000);
       }),
   );
+}
+
+/** Used by /auth/google-bridge inside Chrome Custom Tabs (APK). */
+export function requestGoogleIdTokenForBridge(mount?: HTMLElement | null): Promise<string> {
+  return requestGoogleIdToken({ visible: true, mount });
 }
 
 export function explainFirebaseAuthError(err: unknown) {

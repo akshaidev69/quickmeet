@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="LetsConnect">
+  <rect x="1" y="1" width="14" height="14" rx="4" fill="#0c6b4d"/>
+  <rect x="17" y="1" width="14" height="14" rx="4" fill="#0c6b4d" opacity=".55"/>
+  <rect x="1" y="17" width="14" height="14" rx="4" fill="#0c6b4d" opacity=".55"/>
+  <rect x="17" y="17" width="14" height="14" rx="4" fill="#143d32"/>
+</svg>

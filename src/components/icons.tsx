@@ -8,14 +8,18 @@ function Svg({ children }: { children: ReactNode }) {
   );
 }
 
+/** Canonical LetsConnect mark — same geometry as /logo.svg (favicon, Android, hero). */
 export function Logo({ size = 28 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" aria-hidden="true">
-      <rect x="1" y="1" width="14" height="14" rx="4" fill="#0c6b4d" />
-      <rect x="17" y="1" width="14" height="14" rx="4" fill="#0c6b4d" opacity="0.55" />
-      <rect x="1" y="17" width="14" height="14" rx="4" fill="#0c6b4d" opacity="0.55" />
-      <rect x="17" y="17" width="14" height="14" rx="4" fill="#143d32" />
-    </svg>
+    <img
+      src="/logo.svg"
+      width={size}
+      height={size}
+      alt=""
+      aria-hidden="true"
+      draggable={false}
+      style={{ display: 'block', flex: '0 0 auto' }}
+    />
   );
 }
 

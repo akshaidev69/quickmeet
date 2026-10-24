@@ -1,5 +1,6 @@
 import { Component, type ReactNode, useEffect, useState } from 'react';
 import { AuthScreen } from './components/AuthScreen';
+import { GoogleAuthBridge } from './components/GoogleAuthBridge';
 import { HomeScreen } from './components/HomeScreen';
 import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
@@ -11,11 +12,12 @@ import { saveMeeting } from './lib/api';
 import { forgetMeeting, loadRecent, loadSchedule, loadSettings, rememberMeeting, saveSchedule, saveSettings } from './lib/storage';
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'google-bridge';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
   const room = new URLSearchParams(location.search).get('room');
+  if (path === '/auth/google-bridge') return 'google-bridge';
   if (path === '/login') return 'login';
   if (path === '/register' || path === '/signup') return 'register';
   if (path === '/app' || room) return 'home';
@@ -26,9 +28,10 @@ function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: s
   const room = new URLSearchParams(location.search).get('room');
   const base = pathPhase();
   if (!authed) {
-    if (base === 'login' || base === 'register') return { view: base, code: '' };
+    if (base === 'google-bridge' || base === 'login' || base === 'register') return { view: base, code: '' };
     return { view: 'market', code: '' };
   }
+  if (base === 'google-bridge') return { view: 'google-bridge', code: '' };
   if (room) {
     const code = formatCode(room);
     if (!isFullCode(code)) return { view: 'home', code: '' };
@@ -168,6 +171,10 @@ function AppRoutes() {
   function updateSchedule(items: ScheduledMeeting[]) {
     saveSchedule(items);
     setSchedule(items);
+  }
+
+  if (view === 'google-bridge' || location.pathname.replace(/\/+$/, '') === '/auth/google-bridge') {
+    return <GoogleAuthBridge />;
   }
 
   if (loading || boot) {

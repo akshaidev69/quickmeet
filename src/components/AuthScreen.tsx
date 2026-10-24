@@ -1,8 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { App as CapApp } from '@capacitor/app';
+import { Browser } from '@capacitor/browser';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
 import { fetchConfig, loginWithFirebaseToken } from '../lib/api';
 import { firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
+import { googleBridgeUrl, isNativeApp, parseNativeAuthUrl } from '../lib/native';
 
 type Mode = 'login' | 'register';
 
@@ -16,17 +19,62 @@ type Props = {
 export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   const { login, register, setUser } = useAuth();
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('anmolg2270@gmail.com');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [googleOn, setGoogleOn] = useState(firebaseConfigured());
+  const [pwReady, setPwReady] = useState(false);
+  const passwordRef = useRef<HTMLInputElement>(null);
+  const pendingNative = useRef(false);
 
   useEffect(() => {
     void fetchConfig()
       .then((config) => setGoogleOn(config.firebase || config.google || firebaseConfigured()))
       .catch(() => setGoogleOn(firebaseConfigured()));
   }, []);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+
+    const handleUrl = async (url: string) => {
+      if (!pendingNative.current) return;
+      const { idToken, error: authError } = parseNativeAuthUrl(url);
+      if (!idToken && !authError) return;
+      pendingNative.current = false;
+      try {
+        await Browser.close();
+      } catch {
+        /* ignore */
+      }
+      if (authError || !idToken) {
+        setBusy(false);
+        setError(authError || 'Google sign-in was cancelled.');
+        return;
+      }
+      try {
+        const data = await loginWithFirebaseToken(idToken);
+        setUser(data.user);
+        onSuccess();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Google sign-in failed');
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const sub = CapApp.addListener('appUrlOpen', (event) => {
+      void handleUrl(event.url);
+    });
+
+    void CapApp.getLaunchUrl().then((result) => {
+      if (result?.url) void handleUrl(result.url);
+    });
+
+    return () => {
+      void sub.then((handle) => handle.remove());
+    };
+  }, [onSuccess, setUser]);
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -51,14 +99,27 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
         window.location.href = '/api/auth/google';
         return;
       }
+
+      // Android/iOS WebView cannot complete Google GIS popups (blank page).
+      // Open real Chrome Custom Tabs → bridge page → deep-link back with idToken.
+      if (isNativeApp()) {
+        pendingNative.current = true;
+        await Browser.open({
+          url: googleBridgeUrl(),
+          presentationStyle: 'popover',
+          toolbarColor: '#0b1411',
+        });
+        return;
+      }
+
       const { idToken } = await signInWithGooglePopup();
       const data = await loginWithFirebaseToken(idToken);
       setUser(data.user);
       onSuccess();
     } catch (err) {
+      pendingNative.current = false;
       setError(err instanceof Error ? err.message : 'Google sign-in failed');
       console.error('Google sign-in failed', err);
-    } finally {
       setBusy(false);
     }
   }
@@ -72,10 +133,19 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
         <div className="auth-brand">
           <Logo size={32} />
           <h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
-          <p>{mode === 'login' ? 'Log in with Google or email to open your meetings.' : 'Free forever for now — no card needed.'}</p>
+          <p>
+            {mode === 'login'
+              ? 'Log in with Google or email to open your meetings.'
+              : 'Free forever for now — no card needed.'}
+          </p>
         </div>
 
-        <button type="button" className={googleOn ? 'google-btn' : 'google-btn off'} disabled={busy || !googleOn} onClick={() => void onGoogle()}>
+        <button
+          type="button"
+          className={googleOn ? 'google-btn' : 'google-btn off'}
+          disabled={busy || !googleOn}
+          onClick={() => void onGoogle()}
+        >
           <GoogleMark />
           {busy ? 'Opening Google…' : googleOn ? 'Continue with Google' : 'Google sign-in loading…'}
         </button>
@@ -83,25 +153,55 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 
         <div className="auth-or">or use email</div>
 
-        <form className="auth-form" onSubmit={onSubmit}>
+        <form className="auth-form" onSubmit={onSubmit} autoComplete="off">
           {mode === 'register' && (
             <label className="field">
               <span>Name</span>
-              <input value={name} maxLength={60} required autoComplete="name" onChange={(e) => setName(e.target.value)} />
+              <input
+                value={name}
+                maxLength={60}
+                required
+                name="lc-name"
+                autoComplete="name"
+                onChange={(e) => setName(e.target.value)}
+              />
             </label>
           )}
           <label className="field">
             <span>Email</span>
-            <input type="email" value={email} required autoComplete="email" onChange={(e) => setEmail(e.target.value)} />
+            <input
+              type="email"
+              value={email}
+              required
+              name="lc-email"
+              autoComplete="username"
+              inputMode="email"
+              onChange={(e) => setEmail(e.target.value)}
+            />
           </label>
           <label className="field">
             <span>Password</span>
             <input
+              ref={passwordRef}
               type="password"
               value={password}
               required
               minLength={8}
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              name="lc-password"
+              // Avoid Android/Chrome password-generator hijacking every keystroke.
+              autoComplete="off"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+              data-lpignore="true"
+              data-1p-ignore="true"
+              data-form-type="other"
+              // readOnly until focused stops autofill from opening on the first letter.
+              readOnly={!pwReady}
+              onFocus={() => {
+                setPwReady(true);
+                window.setTimeout(() => passwordRef.current?.removeAttribute('readonly'), 10);
+              }}
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
@@ -136,10 +236,22 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 function GoogleMark() {
   return (
     <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
-      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.5-.4-3.5z" />
-      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 16.1 4 9.3 8.5 6.3 14.7z" />
-      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.3 35.3 26.8 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.2 39.5 16 44 24 44z" />
-      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l.1.1 6.2 5.2C39.2 37.3 44 32 44 24c0-1.3-.1-2.5-.4-3.5z" />
+      <path
+        fill="#FFC107"
+        d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.5-.4-3.5z"
+      />
+      <path
+        fill="#FF3D00"
+        d="M6.3 14.7l6.6 4.8C14.7 16 19 12 24 12c3 0 5.8 1.1 7.9 3l5.7-5.7C34.2 6.1 29.4 4 24 4 16.1 4 9.3 8.5 6.3 14.7z"
+      />
+      <path
+        fill="#4CAF50"
+        d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.3 35.3 26.8 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.2 39.5 16 44 24 44z"
+      />
+      <path
+        fill="#1976D2"
+        d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.2 5.6l.1.1 6.2 5.2C39.2 37.3 44 32 44 24c0-1.3-.1-2.5-.4-3.5z"
+      />
     </svg>
   );
 }
