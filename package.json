@@ -23,12 +23,18 @@
     "@capacitor/browser": "8.0.5",
     "@capacitor/cli": "8.5.3",
     "@capacitor/core": "8.5.3",
+    "bcryptjs": "^3.0.3",
     "firebase": "^13.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "pg": "^8.23.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/ws": "^8.18.1",

@@ -3,7 +3,7 @@ import { ThemeButton } from './LookControls';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
 import { fetchMeetings, removeMeeting, type SavedMeeting } from '../lib/api';
-import { formatCode, isFullCode, meetingCode, safeName, uid } from '../lib/code';
+import { formatCode, isFullCode, isValidMeetingCode, meetingCode, safeName, uid } from '../lib/code';
 import { isNativeApp } from '../lib/native';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
 
@@ -50,6 +50,7 @@ export function HomeScreen({
   const { user } = useAuth();
   const native = isNativeApp();
   const [code, setCode] = useState('');
+  const [joinError, setJoinError] = useState('');
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
   const [when, setWhen] = useState('');
@@ -61,7 +62,6 @@ export function HomeScreen({
   const [showAllMeetings, setShowAllMeetings] = useState(false);
   const [showAllRecent, setShowAllRecent] = useState(false);
   const LIST_PREVIEW = 4;
-  const ready = isFullCode(code);
   const firstName = user?.name?.split(' ')[0] || '';
   const greeting = (() => {
     const hour = new Date().getHours();
@@ -144,9 +144,25 @@ export function HomeScreen({
     onEnter(next, 'Instant meeting', settings.instantJoin ? 'room' : 'lobby', 'host');
   }
 
-  function join(nextCode: string, label: string, role: 'host' | 'guest' = 'guest') {
-    if (!isFullCode(nextCode)) return;
-    onEnter(formatCode(nextCode), label, settings.instantJoin ? 'room' : 'lobby', role);
+  async function join(nextCode: string, label: string, role: 'host' | 'guest' = 'guest') {
+    const formatted = formatCode(nextCode);
+    if (!isFullCode(formatted) || !isValidMeetingCode(formatted)) {
+      setJoinError('Enter a valid meeting code (abc-defg-hij).');
+      return;
+    }
+    if (role === 'guest') {
+      try {
+        const res = await fetch(`/api/rooms/${encodeURIComponent(formatted)}`);
+        if (res.status === 404) {
+          setJoinError('Meeting not found. Check the code and try again.');
+          return;
+        }
+      } catch {
+        /* offline: still allow lobby attempt */
+      }
+    }
+    setJoinError('');
+    onEnter(formatted, label, settings.instantJoin ? 'room' : 'lobby', role);
   }
 
   function createScheduled(event: FormEvent) {
@@ -182,7 +198,7 @@ export function HomeScreen({
           <h2>Your meetings</h2>
           <span>{cloud.length}</span>
         </div>
-        <p className="hint desk-only">Synced to your account ? not just this browser.</p>
+        <p className="hint desk-only">Synced to your account {'\u2014'} not just this browser.</p>
         {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
         <ul className="list hub-list">
           {cloudVisible.map((item) => (
@@ -190,12 +206,12 @@ export function HomeScreen({
               <div>
                 <strong>{item.title}</strong>
                 <span>
-                  {whenLabel(item.startedAt)} · {formatDuration(item.durationMs)}
+                  {whenLabel(item.startedAt)} {'\u00b7'} {formatDuration(item.durationMs)}
                 </span>
                 <code>{item.code}</code>
               </div>
               <div className="row-actions">
-                <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
                   Open
                 </button>
                 <button type="button" onClick={() => void forgetCloud(item.id)}>
@@ -263,7 +279,7 @@ export function HomeScreen({
                 <code>{item.code}</code>
               </div>
               <div className="row-actions">
-                <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
                   Start
                 </button>
                 <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>
@@ -287,7 +303,7 @@ export function HomeScreen({
                 <code>{item.code}</code>
               </div>
               <div className="row-actions">
-                <button type="button" onClick={() => join(item.code, item.title)}>
+                <button type="button" onClick={() => void join(item.code, item.title)}>
                   Rejoin
                 </button>
                 <button type="button" onClick={() => onForget(item.code)}>
@@ -406,18 +422,22 @@ export function HomeScreen({
               spellCheck={false}
               inputMode="text"
               aria-label="Meeting code"
-              onChange={(event) => setCode(formatCode(event.target.value))}
+              onChange={(event) => {
+                setCode(formatCode(event.target.value));
+                if (joinError) setJoinError('');
+              }}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && ready) {
+                if (event.key === 'Enter') {
                   event.preventDefault();
-                  join(code, 'Joined meeting');
+                  void join(code, 'Joined meeting');
                 }
               }}
             />
-            <button type="button" className="secondary" disabled={!ready} onClick={() => join(code, 'Joined meeting')}>
+            <button type="button" className="secondary" onClick={() => void join(code, 'Joined meeting')}>
               Join
             </button>
           </div>
+          {joinError && <p className="field-error app-join-error">{joinError}</p>}
           <button type="button" className="app-new-btn" onClick={start}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
               <path d="M12 5v14M5 12h14" strokeLinecap="round" />
@@ -453,7 +473,7 @@ export function HomeScreen({
                       <code>{item.code}</code>
                     </div>
                     <div className="row-actions">
-                      <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                      <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
                         Start
                       </button>
                     </div>

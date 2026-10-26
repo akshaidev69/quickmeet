@@ -78,7 +78,15 @@ type RoomApi = {
   rename: (name: string) => void;
 };
 
-const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+const iceServers: RTCIceServer[] = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  // Open relay TURN so guests behind strict NAT / no-camera peers can still connect.
+  {
+    urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443'],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
 
 function tuneCameraTrack(track: MediaStreamTrack | null) {
   if (!track) return;
@@ -307,9 +315,9 @@ export function useRoom(options: Options) {
       const video = stream?.getVideoTracks()[0] ?? null;
       tuneCameraTrack(video);
       if (audio && stream) conn.audioSender = conn.pc.addTrack(audio, stream);
-      else conn.audioSender = conn.pc.addTransceiver('audio', { direction: 'sendrecv' }).sender;
+      else conn.audioSender = conn.pc.addTransceiver('audio', { direction: audio || video ? 'sendrecv' : 'recvonly' }).sender;
       if (video && stream) conn.videoSender = conn.pc.addTrack(video, stream);
-      else conn.videoSender = conn.pc.addTransceiver('video', { direction: 'sendrecv' }).sender;
+      else conn.videoSender = conn.pc.addTransceiver('video', { direction: audio || video ? 'sendrecv' : 'recvonly' }).sender;
       tuneCameraSender(conn.videoSender);
       const screenVideo = screenStream?.getVideoTracks()[0];
       const screenAudio = screenStream?.getAudioTracks()[0];
@@ -368,9 +376,41 @@ export function useRoom(options: Options) {
       pc.onconnectionstatechange = () => {
         if (!closed) setConnState((prev) => ({ ...prev, [remoteId]: pc.connectionState }));
       };
+      const dropPeer = () => {
+        conns.get(remoteId)?.pc.close();
+        conns.delete(remoteId);
+        mediaRef.current.delete(remoteId);
+        bump();
+        if (closed) return;
+        setPeers((prev) => {
+          if (!prev[remoteId]) return prev;
+          const next = { ...prev };
+          delete next[remoteId];
+          return next;
+        });
+        setConnState((prev) => {
+          if (!prev[remoteId]) return prev;
+          const next = { ...prev };
+          delete next[remoteId];
+          return next;
+        });
+      };
+
       pc.oniceconnectionstatechange = () => {
         if (closed) return;
-        if (pc.iceConnectionState === 'failed') setConnState((prev) => ({ ...prev, [remoteId]: 'failed' }));
+        const ice = pc.iceConnectionState;
+        if (ice === 'failed' || ice === 'closed') {
+          dropPeer();
+          return;
+        }
+        if (ice === 'disconnected') {
+          window.setTimeout(() => {
+            if (closed) return;
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+              dropPeer();
+            }
+          }, 4000);
+        }
       };
       pc.ontrack = (event) => {
         tuneReceiverLatency(event.receiver);
@@ -772,8 +812,7 @@ export function useRoom(options: Options) {
       },
     };
 
-    connect();
-    return () => {
+    const sendLeave = () => {
       try {
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ kind: 'signal', from: peerId, payload: { type: 'leave', from: peerId } }));
@@ -781,6 +820,17 @@ export function useRoom(options: Options) {
       } catch {
         /* socket already closed */
       }
+    };
+
+    const onPageHide = () => sendLeave();
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
+
+    connect();
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
+      sendLeave();
       closed = true;
       dead = true;
       window.clearTimeout(reconnectTimer);

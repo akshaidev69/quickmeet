@@ -3,6 +3,23 @@ import { WebSocketServer } from 'ws';
 /** @type {import('http').Server | null} */
 let attachedServer = null;
 
+/** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean }>>} */
+const rooms = new Map();
+/** @type {Map<string, string>} */
+const hosts = new Map();
+/** @type {Map<string, Set<string>>} */
+const admittedMemory = new Map();
+/** @type {Map<string, Set<string>>} */
+const coHosts = new Map();
+
+/** True when a meeting code currently has at least one connected peer (usually the host). */
+export function roomIsLive(code) {
+  const key = String(code || '').trim().toLowerCase();
+  if (!key) return false;
+  const map = rooms.get(key);
+  return Boolean(map && map.size > 0 && hosts.get(key));
+}
+
 /**
  * Shared WebSocket signaling: sticky host, co-hosts, waiting-room admit gate, peer relay.
  * @param {import('http').Server} httpServer
@@ -11,15 +28,6 @@ export function attachSignal(httpServer) {
   if (!httpServer || attachedServer === httpServer) return;
   attachedServer = httpServer;
   const wss = new WebSocketServer({ noServer: true });
-
-  /** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean }>>} */
-  const rooms = new Map();
-  /** @type {Map<string, string>} */
-  const hosts = new Map();
-  /** @type {Map<string, Set<string>>} */
-  const admittedMemory = new Map();
-  /** @type {Map<string, Set<string>>} */
-  const coHosts = new Map();
 
   function roomMap(room) {
     let map = rooms.get(room);

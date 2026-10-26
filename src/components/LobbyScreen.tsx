@@ -152,7 +152,7 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
             <div className="nameplate">
               <span>
                 {name}
-                {micOn && micReady ? '' : ' · Muted'}
+                {micOn && micReady ? '' : ' \u00b7 Muted'}
               </span>
             </div>
             <div className="preview-controls">
@@ -249,13 +249,13 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
         </section>
 
         <section className="lobby-panel meet-join">
-          <p className="ready-kicker">Meeting · {code}</p>
+          <p className="ready-kicker">Meeting {'\u00b7'} {code}</p>
           <h1>{asHost ? 'Ready to start?' : 'Ready to join?'}</h1>
           <p className="ready-sub">
             {opening
               ? 'Checking your camera and microphone\u2026'
               : asHost
-                ? 'You are the host. Start the meeting, then share the link ? guests wait until you admit them.'
+                ? 'You are the host. Start the meeting, then share the link \u2014 guests wait until you admit them.'
                 : 'You will knock first. The host or a co-host admits you into the room.'}
           </p>
           <label className="field">

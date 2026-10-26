@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
 import {
   IconCam,
   IconCamOff,
@@ -49,8 +49,8 @@ type Props = {
 
 type Layout = 'grid' | 'speaker' | 'sidebar';
 type Panel = 'chat' | 'people' | 'catchup' | null;
-type Popover = 'react' | 'more' | 'leave' | 'look' | null;
-type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | null;
+type Popover = 'react' | 'more' | 'look' | null;
+type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | 'leave' | null;
 
 type TileModel = {
   key: string;
@@ -210,6 +210,12 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const [panel, setPanel] = useState<Panel>(null);
   const [popover, setPopover] = useState<Popover>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
+  const [sharingPick, setSharingPick] = useState(false);
+
+  const openDialog = useCallback((next: Dialog) => {
+    setPopover(null);
+    setDialog(next);
+  }, []);
   const [castIds, setCastIds] = useState<string[]>([]);
   const [castScreens, setCastScreens] = useState(true);
   const castRef = useRef<RecordCast>({ peerIds: [], includeScreens: true, includeAudioFromOthers: true });
@@ -568,7 +574,10 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   }, [kickedBy]);
 
   useEffect(() => {
-    if (canModerate && waiting.length > 0) setPanel('people');
+    if (canModerate && waiting.length > 0) {
+      setPanel('people');
+      setPopover(null);
+    }
   }, [canModerate, waiting.length]);
 
   useEffect(() => {
@@ -723,50 +732,59 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       return;
     }
 
+    setSharingPick(true);
     try {
-      const { isNativeApp } = await import('../lib/native');
-      const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
-      if (isNativeApp() && (await nativeScreenShareAvailable())) {
-        const display = await startNativeScreenShare();
+      try {
+        const { isNativeApp } = await import('../lib/native');
+        const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
+        if (isNativeApp() && (await nativeScreenShareAvailable())) {
+          const display = await startNativeScreenShare();
+          display.getVideoTracks()[0]?.addEventListener('ended', () => {
+            display.getTracks().forEach((track) => track.stop());
+            setScreenStream((current) => (current === display ? null : current));
+            void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
+          });
+          setScreenStream(display);
+          toast('Sharing your screen \u2014 app stays open in a small window.');
+          return;
+        }
+      } catch (error) {
+        if (error instanceof Error && /denied|permission|cancel/i.test(error.message)) {
+          toast('Screen share canceled');
+          return;
+        }
+      }
+
+      if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+        toast('Screen share is not available on this device.');
+        return;
+      }
+      try {
+        let display: MediaStream;
+        try {
+          display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        } catch (error) {
+          if (error instanceof DOMException && error.name === 'NotAllowedError') {
+            toast('Screen share canceled');
+            return;
+          }
+          display = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        }
         display.getVideoTracks()[0]?.addEventListener('ended', () => {
           display.getTracks().forEach((track) => track.stop());
           setScreenStream((current) => (current === display ? null : current));
-          void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
         });
         setScreenStream(display);
-        toast('Sharing your screen ? app stays open in a small window.');
-        return;
-      }
-    } catch (error) {
-      if (error instanceof Error && /denied|permission|cancel/i.test(error.message)) {
-        toast('Screen share canceled.');
-        return;
-      }
-    }
-
-    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
-      toast('Screen share is not available on this device.');
-      return;
-    }
-    try {
-      let display: MediaStream;
-      try {
-        display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        toast('Sharing your screen.');
       } catch (error) {
         if (error instanceof DOMException && error.name === 'NotAllowedError') {
-          toast('Screen share canceled.');
+          toast('Screen share canceled');
           return;
         }
-        display = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        toast('Could not share the screen. Allow screen capture when prompted.');
       }
-      display.getVideoTracks()[0]?.addEventListener('ended', () => {
-        display.getTracks().forEach((track) => track.stop());
-        setScreenStream((current) => (current === display ? null : current));
-      });
-      setScreenStream(display);
-      toast('Sharing your screen.');
-    } catch {
-      toast('Could not share the screen. Allow screen capture when prompted.');
+    } finally {
+      setSharingPick(false);
     }
   }
 
@@ -774,7 +792,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     const everyone = [myId, ...peers.map((peer) => peer.id)];
     setCastIds((current) => (current.length ? current.filter((id) => everyone.includes(id)) : everyone));
     setCastScreens(sharing || peers.some((peer) => peer.sharing));
-    setDialog('facecast');
+    openDialog('facecast');
   }
 
 async function toggleRecord() {
@@ -792,7 +810,7 @@ async function toggleRecord() {
       }
       const files = recordFiles(bundle, code);
       setRecordReady(files);
-      setDialog('recordings');
+      openDialog('recordings');
       try {
         await downloadRecordZip(bundle, code);
         toast('ZIP downloaded. Preview below if your PC will not open WebM.');
@@ -937,9 +955,13 @@ async function toggleRecord() {
       else if (key === 'f') run(() => void ui.toggleFullscreen());
       else if (key === 'l') {
         event.preventDefault();
-        if (ui.popover === 'leave') ui.leave();
-        else setPopover('leave');
-      } else if (event.key === '?') run(() => setDialog('shortcuts'));
+        setPopover(null);
+        if (ui.dialog === 'leave') {
+          streamRef.current?.getTracks().forEach((track) => track.stop());
+          screenRef.current?.getTracks().forEach((track) => track.stop());
+          ui.leave();
+        } else openDialog('leave');
+      } else if (event.key === '?') run(() => openDialog('shortcuts'));
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1033,7 +1055,11 @@ async function toggleRecord() {
   ];
 
   function renderTile(tile: TileModel) {
-    const slow = tile.connection && tile.connection !== 'connected' && now - (seenAt.current[tile.peerId] || now) > 8000;
+    const waitMs = now - (seenAt.current[tile.peerId] || now);
+    const connecting = tile.connection && tile.connection !== 'connected';
+    const slow = connecting && waitMs > 8000;
+    const timedOut = connecting && waitMs > 15000;
+    const connection = timedOut ? 'failed' : tile.connection;
     const role =
       tile.kind === 'screen'
         ? 'Screen'
@@ -1051,7 +1077,7 @@ async function toggleRecord() {
     return (
       <Tile
         key={tile.key}
-        tile={tile}
+        tile={{ ...tile, connection }}
         role={role}
         pinned={pin === tile.key}
         localRef={tile.you && tile.kind === 'camera' ? localVideoRef : undefined}
@@ -1091,7 +1117,7 @@ async function toggleRecord() {
       <main className="home kicked">
         <section className="card narrow">
           <h1>{kickedBy} removed you from the meeting</h1>
-          <p>You can join again with the same link · the host will need to admit you again.</p>
+          <p>You can join again with the same link \u00b7 the host will need to admit you again.</p>
           <button type="button" className="primary" onClick={onLeave}>
             Back to home
           </button>
@@ -1239,6 +1265,7 @@ async function toggleRecord() {
       </header>
 
       <div className="banners">
+        {sharingPick && <div className="banner info">Choose what to share\u2026</div>}
         {serverMessage && <div className="banner warn">{serverMessage}</div>}
         {canModerate && waiting.length > 0 && (
           <AdmitBanner
@@ -1251,7 +1278,7 @@ async function toggleRecord() {
         )}
         {!canRecord && hostCastActive && !recording && (
           <div className="banner info">
-            <span>A host or co-host is directing FaceCast · only their chosen faces go into the marketing cut.</span>
+            <span>A host or co-host is directing FaceCast \u00b7 only their chosen faces go into the marketing cut.</span>
           </div>
         )}
         {hear && (
@@ -1281,7 +1308,7 @@ async function toggleRecord() {
         )}
         {peers.length === 0 && !hideAlone && (
           <div className="banner info">
-            <span>You are the host. Copy the link · people who open it wait until you admit them.</span>
+            <span>You are the host. Copy the link \u00b7 people who open it wait until you admit them.</span>
             <button type="button" onClick={() => void copyLink()}>
               Copy link
             </button>
@@ -1390,9 +1417,17 @@ async function toggleRecord() {
               <button type="button" aria-pressed={panel === 'chat'} onClick={() => setPanel('chat')}>
                 Chat
               </button>
-              <button type="button" aria-pressed={panel === 'people'} onClick={() => setPanel('people')}>
-                People ({peers.length + 1}
-                {canModerate && waiting.length ? ` · ${waiting.length} waiting` : ''})
+              <button
+                type="button"
+                className="people-tab"
+                aria-pressed={panel === 'people'}
+                onClick={() => setPanel('people')}
+              >
+                People
+                <em className="tab-badge">{peers.length + 1}</em>
+                {canModerate && waiting.length > 0 && (
+                  <em className="people-waiting">{waiting.length} waiting</em>
+                )}
               </button>
               <button type="button" className="textbtn" onClick={() => setPanel(null)}>
                 Close
@@ -1484,7 +1519,9 @@ async function toggleRecord() {
         <RemoteAudio key={peer.id} stream={peer.audio} sinkId={settings.speakerId} onBlocked={() => setHear(true)} />
       ))}
 
-      {popover && <button type="button" className="backdrop" aria-label="Close menu" onClick={() => setPopover(null)} />}
+      {popover && !dialog && (
+        <button type="button" className="backdrop" aria-label="Close menu" onClick={() => setPopover(null)} />
+      )}
 
       <footer className="controls">
         <div className="cgroup meet-core">
@@ -1708,7 +1745,7 @@ async function toggleRecord() {
                     hint="Quick vote"
                     onClick={() => {
                       setPopover(null);
-                      setDialog('poll');
+                      openDialog('poll');
                     }}
                   />
                 )}
@@ -1730,7 +1767,7 @@ async function toggleRecord() {
                   hint="Mic, camera, speaker"
                   onClick={() => {
                     setPopover(null);
-                    setDialog('settings');
+                    openDialog('settings');
                   }}
                 />
                 <MenuButton
@@ -1739,7 +1776,7 @@ async function toggleRecord() {
                   hint="Keyboard keys"
                   onClick={() => {
                     setPopover(null);
-                    setDialog('shortcuts');
+                    openDialog('shortcuts');
                   }}
                 />
                 {canModerate && (
@@ -1749,7 +1786,7 @@ async function toggleRecord() {
                     hint="Code & invite link"
                     onClick={() => {
                       setPopover(null);
-                      setDialog('details');
+                      openDialog('details');
                     }}
                   />
                 )}
@@ -1771,30 +1808,14 @@ async function toggleRecord() {
               aria-label="Leave"
               title="Leave (L)"
               aria-keyshortcuts="L"
-              onClick={() => setPopover((value) => (value === 'leave' ? null : 'leave'))}
+              onClick={() => {
+                setPopover(null);
+                openDialog('leave');
+              }}
             >
               <IconLeave />
               <span>Leave</span>
             </button>
-            {popover === 'leave' && (
-              <div className="popover confirm leave-confirm" role="dialog" aria-label="Leave meeting">
-                <div className="leave-confirm-icon" aria-hidden="true">
-                  <IconLeave />
-                </div>
-                <div className="leave-confirm-copy">
-                  <strong>Leave meeting?</strong>
-                  <p>You can rejoin anytime with the same link.</p>
-                </div>
-                <div className="leave-confirm-actions">
-                  <button type="button" className="secondary leave-stay" onClick={() => setPopover(null)}>
-                    Stay
-                  </button>
-                  <button type="button" className="primary danger-btn leave-go" onClick={onLeave}>
-                    Leave
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </footer>
@@ -1807,6 +1828,41 @@ async function toggleRecord() {
         ))}
       </div>
 
+      {dialog === 'leave' && (
+        <div className="modal-back" role="presentation" onClick={() => setDialog(null)}>
+          <div
+            className="modal leave-dialog"
+            role="dialog"
+            aria-label="Leave meeting"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="leave-confirm-icon" aria-hidden="true">
+              <IconLeave />
+            </div>
+            <div className="leave-confirm-copy">
+              <strong>Leave meeting?</strong>
+              <p>You can rejoin anytime with the same link.</p>
+            </div>
+            <div className="leave-confirm-actions">
+              <button type="button" className="secondary leave-stay" onClick={() => setDialog(null)}>
+                Stay
+              </button>
+              <button
+                type="button"
+                className="primary danger-btn leave-go"
+                onClick={() => {
+                  setDialog(null);
+                  streamRef.current?.getTracks().forEach((track) => track.stop());
+                  screenRef.current?.getTracks().forEach((track) => track.stop());
+                  onLeave();
+                }}
+              >
+                Leave
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {dialog === 'settings' && (
         <SettingsDialog
           settings={settings}
@@ -1866,7 +1922,7 @@ async function toggleRecord() {
             if (recording) {
               applyCast(next, true);
               setDialog(null);
-              toast('FaceCast cut updated · file follows this live.');
+              toast('FaceCast cut updated \u00b7 file follows this live.');
               return;
             }
             startFaceCast(next);
@@ -2105,8 +2161,8 @@ function Tile({
       ? tile.connection === 'failed'
         ? 'Cannot reach them'
         : slow
-          ? 'Still connecting…'
-          : 'Connecting…'
+          ? 'Still connecting\u2026'
+          : 'Connecting\u2026'
       : '';
 
   return (
@@ -2135,7 +2191,7 @@ function Tile({
           {tile.kind === 'screen' ? 'Screen' : letters}
         </div>
       )}
-      {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen…</p>}
+      {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen\u2026</p>}
       {casted && <div className="castflag">In FaceCast</div>}
       {(tile.hand || (tile.kind === 'camera' && !tile.micOn)) && (
         <div className="tile-badges">
@@ -2341,6 +2397,7 @@ function PeopleList({
         const label = row.you ? `${row.name} (You)` : row.name;
         const canControl =
           canModerate && !row.you && row.id !== hostId && (isHost || !coHostIds.includes(row.id));
+        const overflowOpen = confirmRemove === `more:${row.id}`;
         return (
           <article key={row.id} className="person">
             <div className="avatar sm" style={{ background: colorFor(row.you ? youName : row.name) }}>
@@ -2353,14 +2410,18 @@ function PeopleList({
               </div>
               <span>
                 {[
-                  row.connection !== 'connected' ? (row.connection === 'failed' ? 'Cannot reach' : 'Connecting…') : '',
+                  row.connection !== 'connected'
+                    ? row.connection === 'failed'
+                      ? 'Cannot reach'
+                      : 'Connecting\u2026'
+                    : '',
                   row.micOn ? 'Mic on' : 'Mic off',
                   row.camOn ? 'Cam on' : 'Cam off',
                   row.hand ? 'Hand up' : '',
                   row.sharing ? 'Sharing' : '',
                 ]
                   .filter(Boolean)
-                  .join(' · ')}
+                  .join(' \u00b7 ')}
               </span>
               <div className="person-actions">
                 <button type="button" className="pact" onClick={() => onPin(row.id)} title="Pin">
@@ -2381,30 +2442,56 @@ function PeopleList({
                     {row.micOn ? 'Mute' : 'Unmute'}
                   </button>
                 )}
-                {canControl && (
-                  <button
-                    type="button"
-                    className="pact"
-                    title={row.camOn ? 'Turn camera off' : 'Ask for camera'}
-                    onClick={() => onModerate(row.id, row.camOn ? 'mute-cam' : 'ask-cam')}
-                  >
-                    {row.camOn ? 'Cam off' : 'Cam on'}
-                  </button>
-                )}
-                {isHost && !row.you && row.id !== hostId && (
-                  <button
-                    type="button"
-                    className={coHostIds.includes(row.id) ? 'pact on' : 'pact'}
-                    title={coHostIds.includes(row.id) ? 'Remove co-host' : 'Make co-host'}
-                    onClick={() => onCohost(row.id, !coHostIds.includes(row.id))}
-                  >
-                    {coHostIds.includes(row.id) ? 'Co-host ?' : 'Co-host'}
-                  </button>
-                )}
-                {canControl && confirmRemove !== row.id && (
-                  <button type="button" className="pact danger" onClick={() => onConfirm(row.id)} title="Remove">
-                    Remove
-                  </button>
+                {(canControl || (isHost && !row.you && row.id !== hostId)) && (
+                  <div className="person-more">
+                    <button
+                      type="button"
+                      className="pact"
+                      aria-label="More participant actions"
+                      aria-expanded={overflowOpen}
+                      onClick={() => onConfirm(overflowOpen ? null : `more:${row.id}`)}
+                    >
+                      {'\u22ef'}
+                    </button>
+                    {overflowOpen && (
+                      <div className="person-more-menu" role="menu">
+                        {canControl && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              onConfirm(null);
+                              onModerate(row.id, row.camOn ? 'mute-cam' : 'ask-cam');
+                            }}
+                          >
+                            {row.camOn ? 'Turn cam off' : 'Ask for camera'}
+                          </button>
+                        )}
+                        {isHost && !row.you && row.id !== hostId && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              onConfirm(null);
+                              onCohost(row.id, !coHostIds.includes(row.id));
+                            }}
+                          >
+                            {coHostIds.includes(row.id) ? 'Remove co-host' : 'Make co-host'}
+                          </button>
+                        )}
+                        {canControl && (
+                          <button
+                            type="button"
+                            role="menuitem"
+                            className="danger"
+                            onClick={() => onConfirm(row.id)}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 )}
                 {canControl && confirmRemove === row.id && (
                   <button type="button" className="pact danger" onClick={() => onKick(row.id)}>
@@ -2428,7 +2515,7 @@ function CatchUpPanel({ events, onOpenChat }: { events: CatchUpEvent[]; onOpenCh
         <p>What you missed before joining.</p>
       </header>
       {events.length === 0 ? (
-        <p className="empty">Nothing yet ? you are caught up.</p>
+        <p className="empty">Nothing yet {'\u2014'} you are caught up.</p>
       ) : (
         <ul className="catchup-list">
           {events.map((event) => (
@@ -2541,8 +2628,8 @@ function PollCard({
         );
       })}
       <p>
-        {Object.keys(poll.votes).length} votes{poll.closed ? ' · Closed' : ''}
-        {mine !== undefined ? ' · You voted' : ''}
+        {Object.keys(poll.votes).length} votes{poll.closed ? ' \u00b7 Closed' : ''}
+        {mine !== undefined ? ' \u00b7 You voted' : ''}
       </p>
       {canEnd && !poll.closed && (
         <button type="button" className="secondary slim" onClick={onEnd}>
@@ -2952,7 +3039,7 @@ function DetailsDialog({
         <p className="code-lg">{code}</p>
         <p>
           {isHost
-            ? 'You are the host. Anyone with the link asks to join · admit or deny them from People.'
+            ? 'You are the host. Anyone with the link asks to join \u00b7 admit or deny them from People.'
             : `Host: ${hostName}.`}
         </p>
         <p>Meeting server: {status === 'connected' ? 'Connected' : 'Not connected yet'}.</p>
@@ -2969,7 +3056,7 @@ function DetailsDialog({
                     ? 'Video connected'
                     : peer.connection === 'failed'
                       ? 'Cannot reach them. Their network may be blocking direct video.'
-                      : 'Connecting…'}
+                      : 'Connecting\u2026'}
                 </span>
               </div>
               {peer.connection !== 'connected' && (

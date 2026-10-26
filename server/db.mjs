@@ -49,18 +49,18 @@ function mutate(fn) {
   return cache;
 }
 
-export function createUser({ email, name, passwordHash = null, googleId = null, avatar = null }) {
+export function createUser({ email, name, passwordHash = null, googleId = null, avatar = null, id = null }) {
   const normalized = email.trim().toLowerCase();
   if (cache.users.some((user) => user.email === normalized)) {
-    throw Object.assign(new Error('An account with that email already exists.'), { status: 409 });
+    throw Object.assign(new Error('Email already registered.'), { status: 409 });
   }
   if (googleId && cache.users.some((user) => user.googleId === googleId)) {
     throw Object.assign(new Error('That Google account is already linked.'), { status: 409 });
   }
   const user = {
-    id: randomUUID(),
+    id: id || randomUUID(),
     email: normalized,
-    name: name.trim().slice(0, 60) || normalized.split('@')[0],
+    name: (name || '').trim().slice(0, 60) || normalized.split('@')[0],
     passwordHash,
     googleId,
     avatar,
@@ -72,6 +72,33 @@ export function createUser({ email, name, passwordHash = null, googleId = null, 
     return store;
   });
   return publicUser(user);
+}
+
+/** Create or refresh a local profile row after durable Firebase / JWT auth. */
+export function upsertUserProfile({ id, email, name, passwordHash = undefined, googleId = null, avatar = null }) {
+  const normalized = email.trim().toLowerCase();
+  const existing = cache.users.find((user) => user.email === normalized || (id && user.id === id));
+  if (existing) {
+    mutate((store) => {
+      const user = store.users.find((item) => item.id === existing.id);
+      if (!user) return store;
+      if (name) user.name = String(name).trim().slice(0, 60);
+      if (passwordHash !== undefined) user.passwordHash = passwordHash;
+      if (googleId) user.googleId = googleId;
+      if (avatar) user.avatar = avatar;
+      return store;
+    });
+    return findUserById(existing.id);
+  }
+  createUser({
+    id: id || undefined,
+    email: normalized,
+    name: name || normalized.split('@')[0],
+    passwordHash: passwordHash ?? null,
+    googleId,
+    avatar,
+  });
+  return findUserByEmail(normalized);
 }
 
 export function findUserByEmail(email) {

@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 import { App as CapApp } from '@capacitor/app';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
@@ -27,11 +29,19 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [nameError, setNameError] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
   const [busy, setBusy] = useState(false);
   const [googleOn, setGoogleOn] = useState(firebaseConfigured());
-  const [pwReady, setPwReady] = useState(false);
-  const passwordRef = useRef<HTMLInputElement>(null);
   const pendingNative = useRef(false);
+
+  useEffect(() => {
+    setNameError('');
+    setEmailError('');
+    setPasswordError('');
+    setError('');
+  }, [mode]);
 
   useEffect(() => {
     void fetchConfig()
@@ -90,16 +100,32 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
     };
   }, [onSuccess, setUser]);
 
+  function validateFields() {
+    const nextName = mode === 'register' && !name.trim() ? 'Name is required' : '';
+    const nextEmail = !EMAIL_RE.test(email.trim()) ? 'Enter a valid email address' : '';
+    const nextPassword = password.length < 8 ? 'Password must be at least 8 characters' : '';
+    setNameError(nextName);
+    setEmailError(nextEmail);
+    setPasswordError(nextPassword);
+    return !nextName && !nextEmail && !nextPassword;
+  }
+
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError('');
+    if (!validateFields()) return;
     setBusy(true);
     try {
       if (mode === 'register') await register(name, email, password);
       else await login(email, password);
       onSuccess();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not sign in');
+      const message = err instanceof Error ? err.message : 'Could not sign in';
+      const field = err && typeof err === 'object' && 'field' in err ? String((err as { field?: string }).field || '') : '';
+      if (field === 'email' || /already registered|valid email/i.test(message)) setEmailError(message);
+      else if (field === 'password' || (/password/i.test(message) && /8|short|weak/i.test(message))) setPasswordError(message);
+      else if (field === 'name' || (/name/i.test(message) && /required/i.test(message))) setNameError(message);
+      else setError(message);
     } finally {
       setBusy(false);
     }
@@ -167,18 +193,21 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 
         <div className="auth-or">or use email</div>
 
-        <form className="auth-form" onSubmit={onSubmit} autoComplete="off">
+        <form className="auth-form" onSubmit={onSubmit}>
           {mode === 'register' && (
             <label className="field">
               <span>Name</span>
               <input
                 value={name}
                 maxLength={60}
-                required
                 name="lc-name"
                 autoComplete="name"
-                onChange={(e) => setName(e.target.value)}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (nameError) setNameError('');
+                }}
               />
+              {nameError && <p className="field-error">{nameError}</p>}
             </label>
           )}
           <label className="field">
@@ -186,38 +215,32 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
             <input
               type="email"
               value={email}
-              required
               name="lc-email"
               autoComplete="username"
               inputMode="email"
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => {
+                setEmail(e.target.value);
+                if (emailError) setEmailError('');
+              }}
             />
+            {emailError && <p className="field-error">{emailError}</p>}
           </label>
           <label className="field">
             <span>Password</span>
             <input
-              ref={passwordRef}
               type="password"
               value={password}
-              required
-              minLength={8}
               name="lc-password"
-              // Avoid Android/Chrome password-generator hijacking every keystroke.
-              autoComplete="off"
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               autoCapitalize="off"
               autoCorrect="off"
               spellCheck={false}
-              data-lpignore="true"
-              data-1p-ignore="true"
-              data-form-type="other"
-              // readOnly until focused stops autofill from opening on the first letter.
-              readOnly={!pwReady}
-              onFocus={() => {
-                setPwReady(true);
-                window.setTimeout(() => passwordRef.current?.removeAttribute('readonly'), 10);
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (passwordError) setPasswordError('');
               }}
-              onChange={(e) => setPassword(e.target.value)}
             />
+            {passwordError && <p className="field-error">{passwordError}</p>}
           </label>
           {error && <p className="warn-text">{error}</p>}
           <button type="submit" className="primary xl ask-join" disabled={busy}>

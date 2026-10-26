@@ -28,6 +28,17 @@ export function isFullCode(raw: string) {
   return compactCode(raw).length === 10;
 }
 
+const meetingCodePattern = /^[a-hjkmnp-z]{3}-[a-hjkmnp-z]{4}-[a-hjkmnp-z]{3}$/;
+
+export function isValidMeetingCode(raw: string) {
+  const compact = compactCode(raw);
+  if (compact.length !== 10) return false;
+  for (const char of compact) {
+    if (!alphabet.includes(char)) return false;
+  }
+  return meetingCodePattern.test(formatCode(raw));
+}
+
 export function safeName(name: string) {
   const trimmed = name.trim().slice(0, 40);
   return trimmed || 'Guest';

@@ -6,7 +6,7 @@ import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
 import { MeetingScreen } from './components/MeetingScreen';
 import { AuthProvider, useAuth } from './lib/auth';
-import { formatCode, isFullCode } from './lib/code';
+import { formatCode, isFullCode, isValidMeetingCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
 import { isNativeApp } from './lib/native';
@@ -24,7 +24,7 @@ import {
 } from './lib/storage';
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'google-bridge';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'missing' | 'google-bridge';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
@@ -49,14 +49,14 @@ function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: s
   if (base === 'google-bridge') return { view: 'google-bridge', code: '' };
   if (room) {
     const code = formatCode(room);
-    if (!isFullCode(code)) return { view: 'home', code: '' };
+    if (!isFullCode(code) || !isValidMeetingCode(code)) return { view: 'missing', code: '' };
     return { view: instant ? 'room' : 'lobby', code };
   }
   // WebView / process restart often drops ?room= ? reopen the live session.
   const active = loadActiveRoom();
   if (active) {
     const code = formatCode(active.code);
-    if (isFullCode(code)) {
+    if (isFullCode(code) && isValidMeetingCode(code)) {
       const url = new URL(location.href);
       url.pathname = '/app';
       url.searchParams.set('room', code);
@@ -130,16 +130,38 @@ function AppRoutes() {
   useEffect(() => {
     const title =
       view === 'market'
-        ? 'LetsConnect ? free video meetings with memory'
+        ? 'LetsConnect \u2014 free video meetings with memory'
         : view === 'login'
-          ? 'Log in · LetsConnect'
+          ? 'Log in \u00b7 LetsConnect'
           : view === 'register'
-            ? 'Sign up · LetsConnect'
-            : view === 'home' || !code
-              ? 'LetsConnect'
-              : `${code} · LetsConnect`;
+            ? 'Sign up \u00b7 LetsConnect'
+            : view === 'missing'
+              ? 'Meeting not found \u00b7 LetsConnect'
+              : view === 'home' || !code
+                ? 'LetsConnect'
+                : `${code} \u00b7 LetsConnect`;
     document.title = title;
   }, [code, view]);
+
+  // Guests must land in a live room; invalid / unknown codes show Meeting not found.
+  useEffect(() => {
+    if (!user || asHost) return;
+    if (view !== 'lobby' && view !== 'room') return;
+    if (!code || !isValidMeetingCode(code)) {
+      setView('missing');
+      return;
+    }
+    let cancel = false;
+    void fetch(`/api/rooms/${encodeURIComponent(code)}`)
+      .then((res) => {
+        if (cancel) return;
+        if (res.status === 404) setView('missing');
+      })
+      .catch(() => undefined);
+    return () => {
+      cancel = true;
+    };
+  }, [user, asHost, view, code]);
 
   useEffect(() => {
     const onPop = () => {
@@ -169,6 +191,17 @@ function AppRoutes() {
 
   function goApp() {
     navigate('/app');
+    setView('home');
+  }
+
+  function backFromMissingRoom() {
+    const url = new URL(location.href);
+    url.pathname = '/app';
+    url.searchParams.delete('room');
+    history.replaceState({ view: 'home' }, '', url);
+    setCarry(null);
+    setCode('');
+    setAsHost(false);
     setView('home');
   }
 
@@ -271,6 +304,20 @@ function AppRoutes() {
 
   // Native never shows marketing ? treat leftover market state as home.
   const screen = view === 'market' ? 'home' : view;
+
+  if (screen === 'missing') {
+    return (
+      <main className="home kicked">
+        <section className="card narrow">
+          <h1>Meeting not found</h1>
+          <p>That code is not valid. Check the link or enter a code from the home screen.</p>
+          <button type="button" className="primary" onClick={backFromMissingRoom}>
+            Back to home
+          </button>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <>

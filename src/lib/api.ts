@@ -24,11 +24,16 @@ export type SavedMeeting = {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    headers: { 'Content-Type': 'application/json; charset=utf-8', ...(init?.headers || {}) },
     ...init,
   });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
+  const data = (await response.json().catch(() => ({}))) as T & { error?: string; field?: string };
+  if (!response.ok) {
+    const err = new Error(data.error || `Request failed (${response.status})`) as Error & { field?: string; status?: number };
+    err.field = data.field;
+    err.status = response.status;
+    throw err;
+  }
   return data;
 }
 
