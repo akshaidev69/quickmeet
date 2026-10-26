@@ -553,6 +553,10 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       setScreenStream(null);
       return;
     }
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      toast('Screen share is not available in this browser. Open LetsConnect in Chrome to share.');
+      return;
+    }
     try {
       let display: MediaStream;
       try {
@@ -569,8 +573,9 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
         setScreenStream((current) => (current === display ? null : current));
       });
       setScreenStream(display);
+      toast('Sharing your screen.');
     } catch {
-      toast('Could not share the screen.');
+      toast('Could not share the screen. Allow screen capture when prompted.');
     }
   }
 
@@ -1288,7 +1293,7 @@ async function toggleRecord() {
       {popover && <button type="button" className="backdrop" aria-label="Close menu" onClick={() => setPopover(null)} />}
 
       <footer className="controls">
-        <div className="cgroup">
+        <div className="cgroup meet-core">
           <Cmd
             label={!hasMic ? 'No mic' : micOn ? 'Mic' : 'Muted'}
             shortcut="M"
@@ -1307,11 +1312,28 @@ async function toggleRecord() {
           >
             {camOn && hasCam ? <IconCam /> : <IconCamOff />}
           </Cmd>
-          <Cmd label={sharing ? 'Stop' : 'Share'} shortcut="S" live={sharing} pressed={sharing} onClick={() => void toggleShare()}>
+          <Cmd
+            label={sharing ? 'Stop screen' : 'Screen'}
+            shortcut="S"
+            live={sharing}
+            pressed={sharing}
+            onClick={() => void toggleShare()}
+          >
             <IconShare />
           </Cmd>
+          <Cmd
+            className="phone-only"
+            label={hand ? 'Lower' : 'Hand'}
+            shortcut="H"
+            live={hand}
+            pressed={hand}
+            tone={hand ? 'hand' : undefined}
+            onClick={() => setHand((value) => !value)}
+          >
+            <IconHand />
+          </Cmd>
         </div>
-        <div className="cgroup">
+        <div className="cgroup meet-tools desk-only">
           <Cmd
             label={hand ? 'Lower' : 'Hand'}
             shortcut="H"
@@ -1382,11 +1404,19 @@ async function toggleRecord() {
             )}
           </div>
         </div>
-        <div className="cgroup">
-          <Cmd label={unread ? `Chat ${unread}` : 'Chat'} shortcut="C" live={panel === 'chat'} badge={unread} onClick={() => togglePanel('chat')}>
+        <div className="cgroup meet-panels">
+          <Cmd
+            className="desk-only"
+            label={unread ? `Chat ${unread}` : 'Chat'}
+            shortcut="C"
+            live={panel === 'chat'}
+            badge={unread}
+            onClick={() => togglePanel('chat')}
+          >
             <IconChat />
           </Cmd>
           <Cmd
+            className="desk-only"
             label={`People ${peers.length + 1}`}
             shortcut="P"
             live={panel === 'people'}
@@ -1426,6 +1456,37 @@ async function toggleRecord() {
                     )}
                   </>
                 )}
+                <p className="more-label phone-only">Quick</p>
+                <MenuButton
+                  className="phone-only"
+                  icon={<IconSmile />}
+                  title="React"
+                  hint="Send a reaction"
+                  onClick={() => {
+                    setPopover('react');
+                  }}
+                />
+                <MenuButton
+                  className="phone-only"
+                  icon={<IconCaptions />}
+                  title={captionsOn ? 'Captions on' : 'Captions'}
+                  hint="Live captions"
+                  onClick={() => {
+                    setPopover(null);
+                    if (!captionsOn && !captionSupported) {
+                      toast('Live captions need Chrome or Edge on HTTPS.');
+                      return;
+                    }
+                    setCaptionsOn((value) => !value);
+                  }}
+                />
+                <MenuButton
+                  className="phone-only"
+                  icon={<IconLook />}
+                  title="Background"
+                  hint="Blur or replace"
+                  onClick={() => setPopover('look')}
+                />
                 <p className="more-label">View</p>
                 <MenuButton
                   icon={<IconExpand />}
@@ -1631,6 +1692,7 @@ function Cmd({
   live,
   tone,
   badge,
+  className,
   onClick,
   children,
 }: {
@@ -1641,13 +1703,14 @@ function Cmd({
   live?: boolean;
   tone?: 'hand';
   badge?: number;
+  className?: string;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
-      className={cx('cmd', danger && 'danger', live && 'live', tone === 'hand' && 'hand-live')}
+      className={cx('cmd', danger && 'danger', live && 'live', tone === 'hand' && 'hand-live', className)}
       aria-pressed={pressed}
       aria-keyshortcuts={shortcut}
       title={shortcut ? `${label} (${shortcut})` : label}
@@ -1665,16 +1728,18 @@ function MenuButton({
   title,
   hint,
   danger,
+  className,
   onClick,
 }: {
   icon: ReactNode;
   title: string;
   hint?: string;
   danger?: boolean;
+  className?: string;
   onClick: () => void;
 }) {
   return (
-    <button type="button" className={danger ? 'menu-row danger' : 'menu-row'} onClick={onClick}>
+    <button type="button" className={cx('menu-row', danger && 'danger', className)} onClick={onClick}>
       <span className="menu-ico" aria-hidden="true">
         {icon}
       </span>
