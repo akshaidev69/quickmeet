@@ -9,7 +9,8 @@ const config: CapacitorConfig = {
   appName: 'LetsConnect',
   webDir: 'dist',
   server: {
-    url: 'https://quickmeet-qi4p.onrender.com',
+    // Land on the app shell, not the marketing website.
+    url: 'https://quickmeet-qi4p.onrender.com/app',
     cleartext: false,
     androidScheme: 'https',
   },

@@ -399,6 +399,19 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   }, [screenStream, setScreenTrack]);
 
   useEffect(() => {
+    const wantShare = new URLSearchParams(location.search).get('share') === '1';
+    if (!wantShare) return;
+    const url = new URL(location.href);
+    url.searchParams.delete('share');
+    history.replaceState(history.state, '', url);
+    const timer = window.setTimeout(() => {
+      void toggleShare();
+    }, 600);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     if (!kickedBy) return;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     screenRef.current?.getTracks().forEach((track) => track.stop());
@@ -553,8 +566,24 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       setScreenStream(null);
       return;
     }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      toast('Screen share is not available in this browser. Open LetsConnect in Chrome to share.');
+    const canShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+    if (!canShare) {
+      // Android WebView often lacks getDisplayMedia ? open the live room in Chrome to share.
+      try {
+        const { openExternalBrowser } = await import('../lib/native');
+        const { isNativeApp } = await import('../lib/native');
+        if (isNativeApp()) {
+          const url = new URL(location.href);
+          url.searchParams.set('room', code);
+          url.searchParams.set('share', '1');
+          await openExternalBrowser(url.toString());
+          toast('Opened in Chrome ? tap Screen there to share.');
+          return;
+        }
+      } catch {
+        /* fall through */
+      }
+      toast('Screen share needs Chrome on this device.');
       return;
     }
     try {

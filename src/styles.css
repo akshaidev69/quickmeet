@@ -2733,15 +2733,21 @@ html.is-native .hub-grid {
   .room-meet .present,
   .room-meet .speaker,
   .room-meet .sidebar {
-    padding: 6px 8px;
-    gap: 6px;
+    padding: 0;
+    gap: 4px;
+    height: 100%;
   }
   .room-meet .grid.c1 .tile {
     width: 100%;
     height: 100%;
     max-height: none;
     aspect-ratio: auto;
-    border-radius: 16px;
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .room-meet .tile video,
+  .room-meet .tile canvas.fx-canvas {
+    object-fit: cover;
   }
   .room-meet .grid.c2 {
     grid-template-columns: 1fr;
@@ -2884,13 +2890,26 @@ html.is-native .room-meet .controls {
   padding-bottom: calc(14px + env(safe-area-inset-bottom));
 }
 html.is-native .auth-page,
-html.is-native .lobby,
-html.is-native .market {
+html.is-native .lobby {
   padding-top: env(safe-area-inset-top);
+}
+html.is-native .market {
+  display: none !important;
 }
 html.is-native .home-hub {
   /* Safe area handled by .hub-wrap ? avoid double top inset */
   padding-top: 0;
+}
+html.is-native .room-meet .stage {
+  background: #0e1411;
+}
+html.is-native .room-meet .grid.c1 .tile {
+  border-radius: 0;
+  box-shadow: none;
+}
+html.is-native .room-meet .tile video,
+html.is-native .room-meet .tile canvas.fx-canvas {
+  object-fit: cover;
 }
 
 @keyframes sheetUp {

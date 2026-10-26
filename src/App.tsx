@@ -9,6 +9,7 @@ import { AuthProvider, useAuth } from './lib/auth';
 import { formatCode, isFullCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
+import { isNativeApp } from './lib/native';
 import { forgetMeeting, loadRecent, loadSchedule, loadSettings, rememberMeeting, saveSchedule, saveSettings } from './lib/storage';
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
@@ -21,6 +22,8 @@ function pathPhase(): Phase {
   if (path === '/login') return 'login';
   if (path === '/register' || path === '/signup') return 'register';
   if (path === '/app' || room) return 'home';
+  // Capacitor / phones should never land on the marketing website shell.
+  if (isNativeApp()) return 'home';
   return 'market';
 }
 
@@ -29,6 +32,7 @@ function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: s
   const base = pathPhase();
   if (!authed) {
     if (base === 'google-bridge' || base === 'login' || base === 'register') return { view: base, code: '' };
+    if (isNativeApp() || base === 'home') return { view: 'login', code: '' };
     return { view: 'market', code: '' };
   }
   if (base === 'google-bridge') return { view: 'google-bridge', code: '' };
@@ -86,6 +90,15 @@ function AppRoutes() {
     if (user && (location.pathname === '/login' || location.pathname === '/register')) {
       navigate('/app', true);
     }
+    // Native APK always stays in the app routes ? never the marketing site.
+    if (isNativeApp()) {
+      const path = location.pathname.replace(/\/+$/, '') || '/';
+      if (!user && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge') {
+        navigate('/login', true);
+      } else if (user && (path === '/' || path === '')) {
+        navigate('/app', true);
+      }
+    }
   }, [loading, user, settings.instantJoin]);
 
   useEffect(() => {
@@ -115,6 +128,10 @@ function AppRoutes() {
   }, [user]);
 
   function goMarket() {
+    if (isNativeApp()) {
+      goApp();
+      return;
+    }
     navigate('/');
     setView('market');
   }
@@ -127,6 +144,11 @@ function AppRoutes() {
   function goApp() {
     navigate('/app');
     setView('home');
+  }
+
+  function afterLogout() {
+    if (isNativeApp()) goAuth('login');
+    else goMarket();
   }
 
   async function enter(nextCode: string, title: string, nextView: 'lobby' | 'room', role: 'host' | 'guest' = 'guest') {
@@ -188,12 +210,12 @@ function AppRoutes() {
   }
 
   if (!user) {
-    if (view === 'login' || view === 'register') {
+    if (isNativeApp() || view === 'login' || view === 'register') {
       return (
         <AuthScreen
-          mode={view}
+          mode={view === 'register' ? 'register' : 'login'}
           onMode={goAuth}
-          onBack={goMarket}
+          onBack={isNativeApp() ? () => goAuth('login') : goMarket}
           onSuccess={goApp}
         />
       );
@@ -208,7 +230,7 @@ function AppRoutes() {
     );
   }
 
-  if (view === 'market') {
+  if (view === 'market' && !isNativeApp()) {
     return (
       <MarketingPage
         signedIn
@@ -219,9 +241,12 @@ function AppRoutes() {
     );
   }
 
+  // Native never shows marketing ? treat leftover market state as home.
+  const screen = view === 'market' ? 'home' : view;
+
   return (
     <>
-      {view === 'home' && (
+      {screen === 'home' && (
         <HomeScreen
           settings={settings}
           recent={recent}
@@ -230,11 +255,11 @@ function AppRoutes() {
           onForget={(code) => setRecent(forgetMeeting(code))}
           onSchedule={updateSchedule}
           onEnter={enter}
-          onLogout={() => void logout().then(goMarket)}
-          onMarketing={goMarket}
+          onLogout={() => void logout().then(afterLogout)}
+          onMarketing={isNativeApp() ? goApp : goMarket}
         />
       )}
-      {view === 'lobby' && (
+      {screen === 'lobby' && (
         <LobbyScreen
           code={code}
           asHost={asHost}
@@ -247,7 +272,7 @@ function AppRoutes() {
           }}
         />
       )}
-      {view === 'room' && (
+      {screen === 'room' && (
         <MeetingScreen
           key={code}
           code={code}

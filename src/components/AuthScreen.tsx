@@ -134,11 +134,15 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
     }
   }
 
+  const native = isNativeApp();
+
   return (
-    <main className="auth-page">
-      <button type="button" className="auth-back textbtn" onClick={onBack}>
-        ← LetsConnect home
-      </button>
+    <main className={`auth-page${native ? ' auth-native' : ''}`}>
+      {!native && (
+        <button type="button" className="auth-back textbtn" onClick={onBack}>
+          ← LetsConnect home
+        </button>
+      )}
       <section className="auth-card">
         <div className="auth-brand">
           <Logo size={32} />
