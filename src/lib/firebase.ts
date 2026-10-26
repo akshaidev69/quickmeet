@@ -165,6 +165,19 @@ export function requestGoogleIdTokenForBridge(mount?: HTMLElement | null): Promi
   return requestGoogleIdToken({ visible: true, mount });
 }
 
+/** Exchange a Google GIS JWT for a Firebase Auth ID token (same path as web popup). */
+export async function exchangeGoogleIdToken(googleIdToken: string): Promise<string> {
+  const authInstance = getFirebaseAuth();
+  if (!authInstance) throw new Error('Google sign-in is not ready yet.');
+  try {
+    const credential = GoogleAuthProvider.credential(googleIdToken);
+    const result = await signInWithCredential(authInstance, credential);
+    return result.user.getIdToken();
+  } catch (err) {
+    throw new Error(explainFirebaseAuthError(err));
+  }
+}
+
 export function explainFirebaseAuthError(err: unknown) {
   const code =
     typeof err === 'object' && err && 'code' in err && typeof (err as { code: unknown }).code === 'string'

@@ -60,6 +60,22 @@ export function loginWithFirebaseToken(idToken: string) {
   });
 }
 
+/** Chrome Custom Tab handoff: store validated token, return a short deep-link code. */
+export function createFirebaseHandoff(idToken: string) {
+  return request<{ code: string; expiresIn: number }>('/api/auth/firebase/handoff', {
+    method: 'POST',
+    body: JSON.stringify({ idToken }),
+  });
+}
+
+/** Capacitor app claims the handoff code and receives the session cookie. */
+export function claimFirebaseHandoff(code: string) {
+  return request<{ user: AuthUser }>('/api/auth/firebase/claim', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
 export function logoutAccount() {
   return request<{ ok: boolean }>('/api/auth/logout', { method: 'POST', body: '{}' });
 }

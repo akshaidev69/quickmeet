@@ -42,6 +42,20 @@ import {
 
 const COOKIE = 'lc_session';
 const SESSION_DAYS = 30;
+/** Short-lived native Google→app handoff codes (avoid stuffing JWTs into deep links). */
+const handoffs = new Map();
+const HANDOFF_TTL_MS = 5 * 60 * 1000;
+const GOOGLE_WEB_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID ||
+  process.env.VITE_GOOGLE_CLIENT_ID ||
+  '183754318076-ck9l1s0sje8updc4tgb2d581b2cj4jf8.apps.googleusercontent.com';
+
+function pruneHandoffs() {
+  const now = Date.now();
+  for (const [code, entry] of handoffs) {
+    if (entry.expiresAt <= now) handoffs.delete(code);
+  }
+}
 
 function hashToken(token) {
   return createHash('sha256').update(token).digest('hex');
@@ -133,7 +147,28 @@ function firebaseApiKey() {
   );
 }
 
-/** Verify a Firebase Auth ID token via Identity Toolkit (not Google OAuth tokeninfo). */
+/** Verify a Google Identity Services id_token (used by the Android bridge before Firebase exchange). */
+async function verifyGoogleIdToken(idToken) {
+  const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw Object.assign(new Error('Invalid Google / Firebase token.'), { status: 401 });
+  }
+  const aud = String(data.aud || '');
+  if (GOOGLE_WEB_CLIENT_ID && aud && aud !== GOOGLE_WEB_CLIENT_ID) {
+    throw Object.assign(new Error('Google token audience mismatch.'), { status: 401 });
+  }
+  const email = String(data.email || '').toLowerCase();
+  if (!email) throw Object.assign(new Error('Google account has no email.'), { status: 401 });
+  return {
+    email,
+    name: String(data.name || email.split('@')[0]),
+    googleId: String(data.sub || ''),
+    avatar: data.picture || null,
+  };
+}
+
+/** Verify a Firebase Auth ID token via Identity Toolkit; fall back to Google GIS tokeninfo. */
 async function verifyFirebaseIdToken(idToken) {
   const apiKey = firebaseApiKey();
   if (!apiKey) {
@@ -149,32 +184,51 @@ async function verifyFirebaseIdToken(idToken) {
     },
   );
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const message = data?.error?.message || 'Invalid Google / Firebase token.';
-    throw Object.assign(new Error(message === 'INVALID_ID_TOKEN' ? 'Invalid Google / Firebase token.' : message), {
-      status: 401,
+  if (res.ok) {
+    const account = data.users?.[0];
+    if (!account) throw Object.assign(new Error('Invalid Google / Firebase token.'), { status: 401 });
+
+    const projectId = firebaseProjectId();
+    if (projectId && account.tenantId && account.tenantId !== projectId) {
+      throw Object.assign(new Error('Token project mismatch.'), { status: 401 });
+    }
+
+    const email = String(account.email || '').toLowerCase();
+    if (!email) throw Object.assign(new Error('Google account has no email.'), { status: 401 });
+
+    const googleProvider = (account.providerUserInfo || []).find((item) => item.providerId === 'google.com');
+    return {
+      email,
+      name: String(account.displayName || googleProvider?.displayName || email.split('@')[0]),
+      googleId: String(googleProvider?.rawId || account.localId || ''),
+      avatar: account.photoUrl || googleProvider?.photoUrl || null,
+    };
+  }
+
+  // Mobile bridge historically passed the raw Google GIS JWT — accept it too.
+  const message = data?.error?.message || '';
+  if (message === 'INVALID_ID_TOKEN' || res.status === 400) {
+    return verifyGoogleIdToken(idToken);
+  }
+  throw Object.assign(new Error(message === 'INVALID_ID_TOKEN' ? 'Invalid Google / Firebase token.' : message || 'Invalid Google / Firebase token.'), {
+    status: 401,
+  });
+}
+
+async function upsertGoogleProfile(profile) {
+  let row = profile.googleId ? findUserByGoogleId(profile.googleId) : null;
+  if (!row) row = findUserByEmail(profile.email);
+  if (row && profile.googleId && !row.googleId) linkGoogle(row.id, profile.googleId, profile.avatar);
+  if (!row) {
+    const created = createUser({
+      email: profile.email,
+      name: profile.name,
+      googleId: profile.googleId || null,
+      avatar: profile.avatar,
     });
+    row = getUserRow(created.id);
   }
-
-  const account = data.users?.[0];
-  if (!account) throw Object.assign(new Error('Invalid Google / Firebase token.'), { status: 401 });
-
-  const projectId = firebaseProjectId();
-  // Optional: confirm token was issued for this Firebase project when claim is present.
-  if (projectId && account.tenantId && account.tenantId !== projectId) {
-    throw Object.assign(new Error('Token project mismatch.'), { status: 401 });
-  }
-
-  const email = String(account.email || '').toLowerCase();
-  if (!email) throw Object.assign(new Error('Google account has no email.'), { status: 401 });
-
-  const googleProvider = (account.providerUserInfo || []).find((item) => item.providerId === 'google.com');
-  return {
-    email,
-    name: String(account.displayName || googleProvider?.displayName || email.split('@')[0]),
-    googleId: String(googleProvider?.rawId || account.localId || ''),
-    avatar: account.photoUrl || googleProvider?.photoUrl || null,
-  };
+  return row;
 }
 
 async function currentUser(req) {
@@ -226,18 +280,41 @@ export async function handleAuthApi(req, res) {
         return true;
       }
       const profile = await verifyFirebaseIdToken(idToken);
-      let row = profile.googleId ? findUserByGoogleId(profile.googleId) : null;
-      if (!row) row = findUserByEmail(profile.email);
-      if (row && profile.googleId && !row.googleId) linkGoogle(row.id, profile.googleId, profile.avatar);
-      if (!row) {
-        const created = createUser({
-          email: profile.email,
-          name: profile.name,
-          googleId: profile.googleId || null,
-          avatar: profile.avatar,
-        });
-        row = getUserRow(created.id);
+      const row = await upsertGoogleProfile(profile);
+      const cookie = issueSession(res, row.id);
+      sendJson(res, 200, { user: publicUser(row) }, { 'Set-Cookie': cookie });
+      return true;
+    }
+
+    // Chrome Custom Tab → short code → Capacitor app (avoids huge JWTs in deep links).
+    if (url.pathname === '/api/auth/firebase/handoff' && req.method === 'POST') {
+      const body = await readBody(req);
+      const idToken = String(body.idToken || '');
+      if (!idToken) {
+        sendJson(res, 400, { error: 'Missing Google / Firebase token.' });
+        return true;
       }
+      // Validate now so a bad token never becomes a handoff code.
+      await verifyFirebaseIdToken(idToken);
+      pruneHandoffs();
+      const code = randomBytes(24).toString('hex');
+      handoffs.set(code, { idToken, expiresAt: Date.now() + HANDOFF_TTL_MS });
+      sendJson(res, 200, { code, expiresIn: Math.floor(HANDOFF_TTL_MS / 1000) });
+      return true;
+    }
+
+    if (url.pathname === '/api/auth/firebase/claim' && req.method === 'POST') {
+      const body = await readBody(req);
+      const code = String(body.code || '');
+      pruneHandoffs();
+      const entry = handoffs.get(code);
+      if (!entry) {
+        sendJson(res, 401, { error: 'Google sign-in expired. Try again.' });
+        return true;
+      }
+      handoffs.delete(code);
+      const profile = await verifyFirebaseIdToken(entry.idToken);
+      const row = await upsertGoogleProfile(profile);
       const cookie = issueSession(res, row.id);
       sendJson(res, 200, { user: publicUser(row) }, { 'Set-Cookie': cookie });
       return true;

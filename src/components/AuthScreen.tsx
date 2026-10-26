@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { App as CapApp } from '@capacitor/app';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
-import { fetchConfig, loginWithFirebaseToken } from '../lib/api';
-import { firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
+import { claimFirebaseHandoff, fetchConfig, loginWithFirebaseToken } from '../lib/api';
+import { exchangeGoogleIdToken, firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
 import {
   closeExternalBrowser,
   googleBridgeUrl,
@@ -44,17 +44,30 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 
     const handleUrl = async (url: string) => {
       if (!pendingNative.current) return;
-      const { idToken, error: authError } = parseNativeAuthUrl(url);
-      if (!idToken && !authError) return;
+      const { code, idToken, error: authError } = parseNativeAuthUrl(url);
+      if (!code && !idToken && !authError) return;
       pendingNative.current = false;
       await closeExternalBrowser();
-      if (authError || !idToken) {
+      if (authError || (!code && !idToken)) {
         setBusy(false);
         setError(authError || 'Google sign-in was cancelled.');
         return;
       }
       try {
-        const data = await loginWithFirebaseToken(idToken);
+        if (code) {
+          const data = await claimFirebaseHandoff(code);
+          setUser(data.user);
+          onSuccess();
+          return;
+        }
+        // Legacy deep links that carried a JWT — exchange if needed, then login.
+        let token = idToken!;
+        try {
+          token = await exchangeGoogleIdToken(idToken!);
+        } catch {
+          /* server also accepts raw Google GIS tokens */
+        }
+        const data = await loginWithFirebaseToken(token);
         setUser(data.user);
         onSuccess();
       } catch (err) {

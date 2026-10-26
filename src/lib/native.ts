@@ -25,14 +25,15 @@ export function googleBridgeUrl() {
   return `${origin}/auth/google-bridge`;
 }
 
-export function parseNativeAuthUrl(url: string): { idToken?: string; error?: string } {
+export function parseNativeAuthUrl(url: string): { code?: string; idToken?: string; error?: string } {
   try {
     const parsed = new URL(url);
     if (parsed.protocol.replace(':', '') !== NATIVE_AUTH_SCHEME) return {};
     if (parsed.hostname !== NATIVE_AUTH_HOST && parsed.host !== NATIVE_AUTH_HOST) return {};
+    const code = parsed.searchParams.get('code') || undefined;
     const idToken = parsed.searchParams.get('idToken') || undefined;
     const error = parsed.searchParams.get('error') || undefined;
-    return { idToken, error };
+    return { code, idToken, error };
   } catch {
     return {};
   }
