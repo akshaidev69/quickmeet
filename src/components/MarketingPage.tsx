@@ -115,48 +115,48 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
         </nav>
       </header>
 
-      <section className="market-hero market-hero-stage">
-        <div className="market-hero-copy">
-          <p className="market-kicker">Video meetings with a memory</p>
-          <h1>LetsConnect</h1>
-          <p className="market-lead">
-            Host-controlled rooms, FaceCast recordings you can open, Catch-Up for late arrivals, and a private meeting
-            history for every account — free while we grow.
-          </p>
-          <div className="market-cta">
-            {signedIn ? (
-              <button type="button" className="primary xl" onClick={onApp}>
-                Go to your meetings
-              </button>
-            ) : (
-              <>
-                <button type="button" className="primary xl" onClick={onRegister}>
-                  Create free account
+      <section className="market-hero">
+        <div className="market-hero-stage">
+          <div className="market-hero-copy">
+            <p className="market-kicker">Meetings that remember</p>
+            <h1>LetsConnect</h1>
+            <p className="market-lead">
+              Start a room, admit who you want, and keep Catch-Up plus FaceCast on your account — free while we grow.
+            </p>
+            <div className="market-cta">
+              {signedIn ? (
+                <button type="button" className="primary xl" onClick={onApp}>
+                  Go to your meetings
                 </button>
-                <button type="button" className="secondary xl" onClick={onLogin}>
+              ) : (
+                <button type="button" className="primary xl" onClick={onRegister}>
+                  Start free
+                </button>
+              )}
+              {!signedIn && (
+                <button type="button" className="textbtn market-cta-login" onClick={onLogin}>
                   Log in
                 </button>
-              </>
-            )}
+              )}
+            </div>
+            <p className="market-note">No credit card. Google or email.</p>
           </div>
-          <p className="market-note">No credit card. Google or email. Your meetings stay on your account.</p>
-        </div>
 
-        <div className="market-hero-visual">
-          <figure className="demo-shot">
-            <img
-              src="/letsconnect-demo-meeting.jpg"
-              alt="Demo LetsConnect meeting with four participants, controls, and Catch-Up panel"
-              width={1280}
-              height={720}
-              loading="eager"
-            />
-            <figcaption>
-              <span className="demo-live">Live demo look</span>
-              Waiting room · hand raise · Catch-Up · FaceCast
-            </figcaption>
-          </figure>
-          <DemoMeetingChrome />
+          <div className="market-hero-visual">
+            <figure className="demo-shot">
+              <img
+                src="/letsconnect-demo-meeting.jpg"
+                alt="LetsConnect meeting with participants and Catch-Up"
+                width={1280}
+                height={720}
+                loading="eager"
+              />
+              <figcaption>
+                <span className="demo-live">Product look</span>
+                Waiting room · Catch-Up · FaceCast
+              </figcaption>
+            </figure>
+          </div>
         </div>
       </section>
 
@@ -227,16 +227,3 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
   );
 }
 
-/** Lightweight animated chrome under the screenshot — reinforces the product without replacing the photo. */
-function DemoMeetingChrome() {
-  return (
-    <div className="demo-chrome" aria-hidden="true">
-      <div className="demo-chip">
-        <i />
-        FaceCast · 4 cuts
-      </div>
-      <div className="demo-chip demo-chip-hand">Hand · Anmol</div>
-      <div className="demo-chip demo-chip-catch">Catch-Up ready</div>
-    </div>
-  );
-}

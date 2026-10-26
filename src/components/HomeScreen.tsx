@@ -300,12 +300,15 @@ export function HomeScreen({
       {/* ?? Mobile / native app shell ?? */}
       <div className="app-home">
         <header className="app-home-top">
-          <div className="app-home-brand">
+          <button type="button" className="app-home-brand" onClick={onMarketing} aria-label="LetsConnect">
             <Logo size={28} />
             <strong>LetsConnect</strong>
-          </div>
+          </button>
           <div className="app-home-top-actions">
             <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+            <button type="button" className="app-home-product desk-inline" onClick={onMarketing}>
+              Product
+            </button>
             <button
               type="button"
               className="app-avatar-btn"
@@ -467,100 +470,6 @@ export function HomeScreen({
         </nav>
 
         <div className="app-home-list">{list}</div>
-      </div>
-
-      {/* ?? Desktop hub ?? */}
-      <div className="home-wrap hub-wrap desk-only-grid">
-        <header className="hub-top desk-only">
-          <button type="button" className="hub-logo" onClick={onMarketing} aria-label="LetsConnect home">
-            <Logo size={32} />
-            <span>LetsConnect</span>
-          </button>
-          <div className="hub-top-actions">
-            {user && (
-              <div className="hub-user">
-                {user.avatar ? (
-                  <img src={user.avatar} alt="" className="account-avatar" />
-                ) : (
-                  <span className="account-avatar fallback">{(user.name || 'A').slice(0, 1)}</span>
-                )}
-                <div className="hub-user-meta">
-                  <strong>{user.name}</strong>
-                  <span>{user.plan === 'free' ? 'Free' : user.plan}</span>
-                </div>
-              </div>
-            )}
-            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-            <button type="button" className="hub-ghost" onClick={onMarketing}>
-              Product
-            </button>
-            <button type="button" className="hub-ghost hub-logout" onClick={onLogout}>
-              Log out
-            </button>
-          </div>
-        </header>
-
-        <section className="hub-hero desk-only">
-          <p className="hub-kicker">
-            {greeting}
-            {firstName ? `, ${firstName}` : ''}
-          </p>
-          <h1>LetsConnect</h1>
-          <p className="hub-lead">Start a room or join with a code. Meetings stay on your account.</p>
-        </section>
-
-        <section className="hub-start desk-only">
-          <label className="field">
-            <span>Your name in meetings</span>
-            <input
-              value={settings.name}
-              placeholder="How should people see you?"
-              maxLength={40}
-              autoComplete="name"
-              onChange={(event) => onSettings({ ...settings, name: event.target.value })}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') start();
-              }}
-            />
-          </label>
-          <button type="button" className="primary xl hub-cta" onClick={start}>
-            New meeting
-          </button>
-          <p className="hint hub-start-hint">Mute camera before anyone sees you. History syncs to this account.</p>
-
-          <div className="or">or join with a code</div>
-          <div className="join-row">
-            <input
-              value={code}
-              placeholder="abc-defg-hij"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              inputMode="text"
-              aria-label="Meeting code"
-              onChange={(event) => setCode(formatCode(event.target.value))}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && ready) {
-                  event.preventDefault();
-                  join(code, 'Joined meeting');
-                }
-              }}
-            />
-            <button type="button" className="secondary" disabled={!ready} onClick={() => join(code, 'Joined meeting')}>
-              Join
-            </button>
-          </div>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={settings.instantJoin}
-              onChange={(event) => onSettings({ ...settings, instantJoin: event.target.checked })}
-            />
-            <span>Skip the camera check and join immediately</span>
-          </label>
-        </section>
-
-        <div className="desk-only-block">{list}</div>
       </div>
     </main>
   );
