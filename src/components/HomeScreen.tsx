@@ -50,7 +50,6 @@ export function HomeScreen({
   const { user } = useAuth();
   const native = isNativeApp();
   const [code, setCode] = useState('');
-  const [joining, setJoining] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
   const [when, setWhen] = useState('');
@@ -67,6 +66,31 @@ export function HomeScreen({
     if (hour < 18) return 'Good afternoon';
     return 'Good evening';
   })();
+  const today = new Date();
+  const todayLabel = today.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const weekDays = (() => {
+    const start = new Date(today);
+    start.setDate(today.getDate() - today.getDay());
+    return Array.from({ length: 7 }, (_, index) => {
+      const day = new Date(start);
+      day.setDate(start.getDate() + index);
+      return {
+        key: day.toISOString().slice(0, 10),
+        label: day.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
+        date: day.getDate(),
+        isToday: day.toDateString() === today.toDateString(),
+      };
+    });
+  })();
+  const todaysMeetings = schedule.filter((item) => {
+    if (!item.when) return false;
+    const when = new Date(item.when);
+    return when.toDateString() === today.toDateString();
+  });
+  const hasToday = todaysMeetings.length > 0 || cloud.some((item) => {
+    const started = new Date(item.startedAt);
+    return started.toDateString() === today.toDateString() && !item.endedAt;
+  });
 
   useEffect(() => {
     if (user?.name && !settings.name.trim()) {
@@ -342,61 +366,90 @@ export function HomeScreen({
             {greeting}
             {firstName ? `, ${firstName}` : ''}
           </p>
-          <h1>Start a meeting</h1>
+          <h1>{todayLabel}</h1>
+          <div className="app-week" role="list" aria-label="This week">
+            {weekDays.map((day) => (
+              <div key={day.key} className={`app-week-day${day.isToday ? ' is-today' : ''}`} role="listitem">
+                <span>{day.label}</span>
+                <strong>{day.date}</strong>
+              </div>
+            ))}
+          </div>
         </section>
 
-        <section className="app-home-actions">
-          <button type="button" className="app-action-primary" onClick={start}>
-            <span className="app-action-ico" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
-                <path d="M12 5v14M5 12h14" strokeLinecap="round" />
-              </svg>
-            </span>
-            <span>
-              <strong>New meeting</strong>
-              <small>Create a room and invite others</small>
-            </span>
-          </button>
-          <button type="button" className="app-action-secondary" onClick={() => setJoining((open) => !open)}>
-            <span className="app-action-ico" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <rect x="3" y="5" width="18" height="14" rx="2" />
-                <path d="M8 12h8M12 8v8" strokeLinecap="round" />
-              </svg>
-            </span>
-            <span>
-              <strong>Join with a code</strong>
-              <small>Enter abc-defg-hij</small>
-            </span>
+        <section className="app-home-toolbar">
+          <div className="join-row app-join-row app-join-inline">
+            <input
+              value={code}
+              placeholder="Enter a code"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              inputMode="text"
+              aria-label="Meeting code"
+              onChange={(event) => setCode(formatCode(event.target.value))}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && ready) {
+                  event.preventDefault();
+                  join(code, 'Joined meeting');
+                }
+              }}
+            />
+            <button type="button" className="secondary" disabled={!ready} onClick={() => join(code, 'Joined meeting')}>
+              Join
+            </button>
+          </div>
+          <button type="button" className="app-new-btn" onClick={start}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+            </svg>
+            New
           </button>
         </section>
 
-        {joining && (
-          <section className="app-join-sheet">
-            <div className="join-row app-join-row">
-              <input
-                value={code}
-                placeholder="abc-defg-hij"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                inputMode="text"
-                autoFocus
-                aria-label="Meeting code"
-                onChange={(event) => setCode(formatCode(event.target.value))}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && ready) {
-                    event.preventDefault();
-                    join(code, 'Joined meeting');
-                  }
-                }}
-              />
-              <button type="button" className="primary" disabled={!ready} onClick={() => join(code, 'Joined meeting')}>
-                Join
+        <section className={`app-home-empty${hasToday ? ' has-meetings' : ''}`}>
+          {!hasToday ? (
+            <>
+              <div className="app-empty-art" aria-hidden="true">
+                <svg viewBox="0 0 160 110" fill="none">
+                  <path d="M18 78c18-28 38-40 62-40s44 12 62 40" stroke="currentColor" strokeWidth="2.2" opacity="0.25" />
+                  <rect x="48" y="28" width="64" height="48" rx="10" fill="var(--accent-soft)" stroke="var(--accent)" strokeWidth="2" />
+                  <circle cx="80" cy="52" r="12" stroke="var(--accent)" strokeWidth="2" />
+                  <path d="M68 78h24" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
+                  <path d="M118 34l14 8v16l-14 8-14-8V42l14-8z" fill="color-mix(in srgb, var(--accent) 18%, white)" stroke="var(--accent)" strokeWidth="1.8" />
+                </svg>
+              </div>
+              <h2>No meetings scheduled for today</h2>
+              <p>Schedule a meeting or enjoy the free time.</p>
+              <button type="button" className="app-new-btn app-new-btn-lg" onClick={start}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+                </svg>
+                New
               </button>
+            </>
+          ) : (
+            <div className="app-today-list">
+              <h2>Today</h2>
+              <ul className="list hub-list">
+                {todaysMeetings.map((item) => (
+                  <li key={item.id}>
+                    <div>
+                      <strong>{item.title}</strong>
+                      <span>{item.when ? new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : 'Scheduled'}</span>
+                      <code>{item.code}</code>
+                    </div>
+                    <div className="row-actions">
+                      <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                        Start
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
             </div>
-          </section>
-        )}
+          )}
+        </section>
 
         <nav className="hub-tabs app-home-tabs" aria-label="Meeting lists">
           <button type="button" className={tab === 'meetings' ? 'active' : ''} onClick={() => setTab('meetings')}>

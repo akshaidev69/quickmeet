@@ -327,8 +327,32 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const hostPeer = peers.find((peer) => peer.id === hostId);
   hostIdRef.current = hostId;
   chatRef.current = chat;
-  const hasMic = Boolean(stream?.getAudioTracks().length);
-  const hasCam = Boolean(stream?.getVideoTracks().length);
+  const hasMic = Boolean(stream?.getAudioTracks().some((track) => track.readyState === 'live'));
+  const hasCam = Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live'));
+
+  function toggleMic() {
+    setMicOn((on) => {
+      if (on) return false;
+      const live = streamRef.current?.getAudioTracks().some((track) => track.readyState === 'live');
+      if (!live) {
+        skipAcquire.current = false;
+        setDeviceNonce((value) => value + 1);
+      }
+      return true;
+    });
+  }
+
+  function toggleCam() {
+    setCamOn((on) => {
+      if (on) return false;
+      const live = streamRef.current?.getVideoTracks().some((track) => track.readyState === 'live');
+      if (!live) {
+        skipAcquire.current = false;
+        setDeviceNonce((value) => value + 1);
+      }
+      return true;
+    });
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -341,17 +365,25 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       return;
     }
     let cancel = false;
+    // Always open mic+cam devices; mute/camera-off only flips track.enabled.
+    // Otherwise unmute/cam-on after PiP/background has no live track to re-enable.
     void acquireMedia({
       micId: settings.micId,
       camId: settings.camId,
-      wantMic: micOn,
-      wantCam: camOn,
+      wantMic: true,
+      wantCam: true,
       noise: settings.noiseSuppression,
     }).then((result) => {
       if (cancel) {
         result.stream.getTracks().forEach((track) => track.stop());
         return;
       }
+      result.stream.getAudioTracks().forEach((track) => {
+        track.enabled = micOn;
+      });
+      result.stream.getVideoTracks().forEach((track) => {
+        track.enabled = camOn;
+      });
       const previous = streamRef.current;
       if (previous && previous !== result.stream) previous.getTracks().forEach((track) => track.stop());
       streamRef.current = result.stream;
@@ -363,7 +395,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     return () => {
       cancel = true;
     };
-    // Mic and camera toggles must not request devices again.
+    // Mic and camera toggles must not request devices again ? only deviceNonce / device ids.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deviceNonce, settings.camId, settings.micId, settings.noiseSuppression]);
 
@@ -432,18 +464,26 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       const now = Date.now();
       if (now - lastBump < 900) return;
       const current = streamRef.current;
-      const videoLive = Boolean(current?.getVideoTracks().some((track) => track.readyState === 'live'));
-      const audioLive = Boolean(current?.getAudioTracks().some((track) => track.readyState === 'live'));
-      const needVideo = camOn && !videoLive;
-      const needAudio = micOn && !audioLive;
-      if (needVideo || needAudio || !current) {
+      // Wait for the first acquire ? do not cancel it with a nonce bump.
+      if (!current) return;
+      const videoLive = Boolean(current.getVideoTracks().some((track) => track.readyState === 'live'));
+      const audioLive = Boolean(current.getAudioTracks().some((track) => track.readyState === 'live'));
+      // Reacquire whenever hardware tracks died (even if muted ? unmute needs a live track).
+      if (!videoLive || !audioLive) {
         lastBump = now;
         skipAcquire.current = false;
         setDeviceNonce((value) => value + 1);
+        return;
       }
+      current.getAudioTracks().forEach((track) => {
+        track.enabled = micOn;
+      });
+      current.getVideoTracks().forEach((track) => {
+        track.enabled = camOn;
+      });
       const preview = localVideoRef.current;
       if (preview) {
-        if (preview.srcObject !== streamRef.current) preview.srcObject = streamRef.current;
+        if (preview.srcObject !== current) preview.srcObject = current;
         void preview.play().catch(() => undefined);
       }
     };
@@ -857,8 +897,8 @@ async function toggleRecord() {
         setPopover(null);
         action();
       };
-      if (key === 'm') run(() => setMicOn((value) => !value));
-      else if (key === 'v') run(() => setCamOn((value) => !value));
+      if (key === 'm') run(() => toggleMic());
+      else if (key === 'v') run(() => toggleCam());
       else if (key === 's') run(() => void ui.toggleShare());
       else if (key === 'h') run(() => setHand((value) => !value));
       else if (key === 'c') run(() => ui.togglePanel('chat'));
@@ -1058,8 +1098,8 @@ async function toggleRecord() {
         micOn={micOn}
         theme={settings.theme}
         onTheme={(theme) => onSettings({ ...settings, theme })}
-        onCam={() => setCamOn((value) => !value)}
-        onMic={() => setMicOn((value) => !value)}
+        onCam={() => toggleCam()}
+        onMic={() => toggleMic()}
         onLeave={onLeave}
         onCopy={() => void copyLink()}
       />
@@ -1245,8 +1285,11 @@ async function toggleRecord() {
               type="button"
               className="primary slim"
               onClick={() => {
-                if (ask.kind === 'mic') setMicOn(true);
-                else setCamOn(true);
+                if (ask.kind === 'mic') {
+                  if (!micOn) toggleMic();
+                } else if (!camOn) {
+                  toggleCam();
+                }
                 dismissAsk();
               }}
             >
@@ -1422,7 +1465,7 @@ async function toggleRecord() {
             shortcut="M"
             danger={!micOn || !hasMic}
             pressed={micOn && hasMic}
-            onClick={() => (hasMic ? setMicOn((value) => !value) : setDialog('settings'))}
+            onClick={() => toggleMic()}
           >
             {micOn && hasMic ? <IconMic /> : <IconMicOff />}
           </Cmd>
@@ -1431,7 +1474,7 @@ async function toggleRecord() {
             shortcut="V"
             danger={!camOn || !hasCam}
             pressed={camOn && hasCam}
-            onClick={() => (hasCam ? setCamOn((value) => !value) : setDialog('settings'))}
+            onClick={() => toggleCam()}
           >
             {camOn && hasCam ? <IconCam /> : <IconCamOff />}
           </Cmd>

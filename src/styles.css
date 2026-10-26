@@ -2999,7 +2999,7 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   font-weight: 750;
 }
 .app-home-hero {
-  margin: 6px 0 18px;
+  margin: 6px 0 14px;
 }
 .app-home-hello {
   margin: 0 0 4px;
@@ -3010,74 +3010,133 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   text-transform: uppercase;
 }
 .app-home-hero h1 {
-  margin: 0;
+  margin: 0 0 14px;
   font-family: "Fraunces", Georgia, serif;
   font-size: clamp(1.85rem, 7vw, 2.35rem);
   letter-spacing: -0.04em;
   line-height: 1.05;
 }
-.app-home-actions {
+.app-week {
   display: grid;
-  gap: 10px;
-  margin-bottom: 14px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  margin: 0 0 4px;
 }
-.app-action-primary,
-.app-action-secondary {
+.app-week-day {
   display: grid;
-  grid-template-columns: 48px 1fr;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  text-align: left;
-  border-radius: 18px;
-  min-height: 72px;
-  padding: 14px 16px;
-  border: 1px solid transparent;
+  justify-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
-.app-action-primary {
-  background: var(--accent);
-  color: #fff;
-  box-shadow: 0 12px 28px color-mix(in srgb, var(--accent) 34%, transparent);
-}
-.app-action-secondary {
-  background: var(--surface);
-  color: var(--text);
-  border-color: var(--line);
-}
-.app-action-ico {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+.app-week-day strong {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
   display: grid;
   place-items: center;
-  background: color-mix(in srgb, #fff 18%, transparent);
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text);
 }
-.app-action-secondary .app-action-ico {
-  background: var(--accent-soft);
+.app-week-day.is-today {
   color: var(--accent-ink);
 }
-.app-action-ico svg { width: 22px; height: 22px; }
-.app-action-primary strong,
-.app-action-secondary strong {
-  display: block;
-  font-size: 16px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
+.app-week-day.is-today strong {
+  background: var(--accent);
+  color: #fff;
 }
-.app-action-primary small,
-.app-action-secondary small {
-  display: block;
-  margin-top: 2px;
-  font-size: 12px;
-  opacity: 0.86;
-  font-weight: 550;
+.app-home-toolbar {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 18px;
 }
-.app-join-sheet {
-  margin: 0 0 14px;
-  padding: 12px;
-  border-radius: 16px;
+.app-join-inline {
+  margin: 0;
+  padding: 6px;
+  border-radius: 999px;
   background: var(--surface);
   border: 1px solid var(--line);
+}
+.app-join-inline input {
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  min-height: 40px;
+  padding-left: 14px;
+}
+.app-join-inline .secondary {
+  border-radius: 999px;
+  min-height: 40px;
+  padding-inline: 16px;
+}
+.app-new-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+.app-new-btn svg {
+  width: 18px;
+  height: 18px;
+}
+.app-new-btn-lg {
+  min-height: 52px;
+  padding: 0 22px;
+  font-size: 15px;
+  margin-top: 6px;
+}
+.app-home-empty {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  gap: 8px;
+  padding: 28px 12px 24px;
+  margin-bottom: 8px;
+}
+.app-home-empty.has-meetings {
+  display: block;
+  text-align: left;
+  padding: 0 0 12px;
+}
+.app-empty-art {
+  width: min(220px, 70vw);
+  color: var(--accent-ink);
+  margin-bottom: 4px;
+}
+.app-empty-art svg {
+  width: 100%;
+  height: auto;
+}
+.app-home-empty h2 {
+  margin: 0;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.35rem;
+  letter-spacing: -0.03em;
+}
+.app-home-empty > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  max-width: 28ch;
+}
+.app-today-list h2 {
+  margin: 0 0 8px;
+  font-size: 15px;
 }
 .app-join-row {
   display: grid !important;
