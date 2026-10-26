@@ -4,7 +4,17 @@ const settingsKey = 'LetsConnect.settings';
 const recentKey = 'LetsConnect.recent';
 const scheduleKey = 'LetsConnect.schedule';
 
+function isNativeShell() {
+  try {
+    return Boolean((window as Window & { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.());
+  } catch {
+    return false;
+  }
+}
+
 function systemTheme(): ThemeMode {
+  // Native app defaults to light so the home shell never lands on a black WebView canvas.
+  if (isNativeShell()) return 'light';
   if (typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches) return 'dark';
   return 'light';
 }
