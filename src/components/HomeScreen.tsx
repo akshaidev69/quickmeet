@@ -4,6 +4,7 @@ import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
 import { fetchMeetings, removeMeeting, type SavedMeeting } from '../lib/api';
 import { formatCode, isFullCode, meetingCode, safeName, uid } from '../lib/code';
+import { isNativeApp } from '../lib/native';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
 
 type Props = {
@@ -47,6 +48,7 @@ export function HomeScreen({
   onMarketing,
 }: Props) {
   const { user } = useAuth();
+  const native = isNativeApp();
   const [code, setCode] = useState('');
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
@@ -54,7 +56,9 @@ export function HomeScreen({
   const [wifiUrls, setWifiUrls] = useState<string[]>([]);
   const [copiedUrl, setCopiedUrl] = useState('');
   const [cloud, setCloud] = useState<SavedMeeting[]>([]);
+  const [tab, setTab] = useState<'meetings' | 'scheduled' | 'recent'>('meetings');
   const ready = isFullCode(code);
+  const firstName = user?.name?.split(' ')[0] || '';
   const greeting = (() => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';
@@ -82,6 +86,7 @@ export function HomeScreen({
   }, []);
 
   useEffect(() => {
+    if (native) return;
     let cancel = false;
     void fetch('/api/network')
       .then((response) => (response.ok ? response.json() : null))
@@ -93,7 +98,7 @@ export function HomeScreen({
     return () => {
       cancel = true;
     };
-  }, []);
+  }, [native]);
 
   async function copyWifi(url: string) {
     try {
@@ -139,14 +144,14 @@ export function HomeScreen({
   }
 
   return (
-    <main className="home home-hub">
+    <main className={`home home-hub${native ? ' home-native' : ''}`}>
       <div className="hub-glow" aria-hidden="true" />
       <div className="hub-grid" aria-hidden="true" />
 
       <div className="home-wrap hub-wrap">
         <header className="hub-top">
           <button type="button" className="hub-logo" onClick={onMarketing} aria-label="LetsConnect home">
-            <Logo size={34} />
+            <Logo size={32} />
             <span>LetsConnect</span>
           </button>
           <div className="hub-top-actions">
@@ -157,26 +162,27 @@ export function HomeScreen({
                 ) : (
                   <span className="account-avatar fallback">{(user.name || 'A').slice(0, 1)}</span>
                 )}
-                <div>
+                <div className="hub-user-meta">
                   <strong>{user.name}</strong>
                   <span>{user.plan === 'free' ? 'Free' : user.plan}</span>
                 </div>
               </div>
             )}
             <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-            <button type="button" className="hub-ghost" onClick={onMarketing}>
+            <button type="button" className="hub-ghost desk-only" onClick={onMarketing}>
               Product
             </button>
-            <button type="button" className="hub-ghost" onClick={onLogout}>
+            <button type="button" className="hub-ghost hub-logout" onClick={onLogout}>
               Log out
             </button>
           </div>
         </header>
 
         <section className="hub-hero">
-          <p className="hub-kicker">{greeting}{user?.name ? `, ${user.name.split(' ')[0]}` : ''}</p>
-          <h1>LetsConnect</h1>
-          <p className="hub-lead">Start a room, invite on Wi?Fi, and keep every meeting on your account.</p>
+          <p className="hub-kicker">{greeting}{firstName ? `, ${firstName}` : ''}</p>
+          <h1 className="desk-only">LetsConnect</h1>
+          <h1 className="phone-only hub-hero-title">Ready when you are</h1>
+          <p className="hub-lead">Start a room or join with a code. Meetings stay on your account.</p>
         </section>
 
         <section className="hub-start">
@@ -194,9 +200,9 @@ export function HomeScreen({
             />
           </label>
           <button type="button" className="primary xl hub-cta" onClick={start}>
-            Start meeting
+            New meeting
           </button>
-          <p className="hint">You can mute camera before anyone sees you. History syncs to this account.</p>
+          <p className="hint hub-start-hint">Mute camera before anyone sees you. History syncs to this account.</p>
 
           <div className="or">or join with a code</div>
           <div className="join-row">
@@ -206,6 +212,7 @@ export function HomeScreen({
               autoCapitalize="none"
               autoCorrect="off"
               spellCheck={false}
+              inputMode="text"
               aria-label="Meeting code"
               onChange={(event) => setCode(formatCode(event.target.value))}
               onKeyDown={(event) => {
@@ -229,13 +236,28 @@ export function HomeScreen({
           </label>
         </section>
 
+        <nav className="hub-tabs phone-only" aria-label="Meeting lists">
+          <button type="button" className={tab === 'meetings' ? 'active' : ''} onClick={() => setTab('meetings')}>
+            Meetings
+            <span>{cloud.length}</span>
+          </button>
+          <button type="button" className={tab === 'scheduled' ? 'active' : ''} onClick={() => setTab('scheduled')}>
+            Planned
+            <span>{schedule.length}</span>
+          </button>
+          <button type="button" className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>
+            Recent
+            <span>{recent.length}</span>
+          </button>
+        </nav>
+
         <aside className="side-col hub-side">
-          <section className="hub-panel">
+          <section className={`hub-panel hub-panel-meetings${tab !== 'meetings' ? ' phone-hide' : ''}`}>
             <div className="hub-panel-head">
               <h2>Your meetings</h2>
               <span>{cloud.length}</span>
             </div>
-            <p className="hint">Synced to your account ? not just this browser.</p>
+            <p className="hint desk-only">Synced to your account ? not just this browser.</p>
             {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
             <ul className="list hub-list">
               {cloud.map((item) => (
@@ -243,7 +265,7 @@ export function HomeScreen({
                   <div>
                     <strong>{item.title}</strong>
                     <span>
-                      {whenLabel(item.startedAt)} · {formatDuration(item.durationMs)}
+                      {whenLabel(item.startedAt)} Â· {formatDuration(item.durationMs)}
                     </span>
                     <code>{item.code}</code>
                   </div>
@@ -261,8 +283,8 @@ export function HomeScreen({
           </section>
 
           {wifiUrls.length > 0 && (
-            <section className="hub-panel">
-              <h2>Wi?Fi access</h2>
+            <section className="hub-panel desk-only">
+              <h2>Wi-Fi access</h2>
               <p className="hint">Open on another device on the same network.</p>
               <ul className="list plain wifi-list">
                 {wifiUrls.map((url) => (
@@ -279,7 +301,7 @@ export function HomeScreen({
             </section>
           )}
 
-          <section className="hub-panel">
+          <section className={`hub-panel hub-panel-scheduled${tab !== 'scheduled' ? ' phone-hide' : ''}`}>
             <div className="card-head">
               <h2>Scheduled</h2>
               <button type="button" className="textbtn" onClick={() => setPlanning((open) => !open)}>
@@ -301,7 +323,7 @@ export function HomeScreen({
                 </button>
               </form>
             )}
-            {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled on this computer.</p>}
+            {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled yet.</p>}
             <ul className="list hub-list">
               {schedule.map((item) => (
                 <li key={item.id}>
@@ -323,9 +345,9 @@ export function HomeScreen({
             </ul>
           </section>
 
-          <section className="hub-panel">
+          <section className={`hub-panel hub-panel-recent${tab !== 'recent' ? ' phone-hide' : ''}`}>
             <h2>Recent on this device</h2>
-            {recent.length === 0 && <p className="empty">Local shortcuts for this browser.</p>}
+            {recent.length === 0 && <p className="empty">Local shortcuts for this device.</p>}
             <ul className="list hub-list">
               {recent.map((item) => (
                 <li key={item.code}>
@@ -347,7 +369,7 @@ export function HomeScreen({
             </ul>
           </section>
 
-          <p className="fine hub-fine">You appear as {safeName(settings.name)}. Video goes peer?to?peer.</p>
+          <p className="fine hub-fine desk-only">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
         </aside>
       </div>
     </main>
