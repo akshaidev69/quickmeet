@@ -15,12 +15,13 @@ const config: CapacitorConfig = {
   },
   android: {
     allowMixedContent: false,
-    backgroundColor: '#0b1411',
+    backgroundColor: '#f3f5f7',
   },
   plugins: {
     SplashScreen: {
       launchAutoHide: true,
-      backgroundColor: '#0b1411',
+      backgroundColor: '#f3f5f7',
+      launchShowDuration: 800,
     },
   },
 };
