@@ -10,7 +10,18 @@ import { formatCode, isFullCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
 import { isNativeApp } from './lib/native';
-import { forgetMeeting, loadRecent, loadSchedule, loadSettings, rememberMeeting, saveSchedule, saveSettings } from './lib/storage';
+import {
+  clearActiveRoom,
+  forgetMeeting,
+  loadActiveRoom,
+  loadRecent,
+  loadSchedule,
+  loadSettings,
+  rememberMeeting,
+  saveActiveRoom,
+  saveSchedule,
+  saveSettings,
+} from './lib/storage';
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
 type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'google-bridge';
@@ -27,7 +38,7 @@ function pathPhase(): Phase {
   return 'market';
 }
 
-function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: string } {
+function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
   const room = new URLSearchParams(location.search).get('room');
   const base = pathPhase();
   if (!authed) {
@@ -40,6 +51,18 @@ function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: s
     const code = formatCode(room);
     if (!isFullCode(code)) return { view: 'home', code: '' };
     return { view: instant ? 'room' : 'lobby', code };
+  }
+  // WebView / process restart often drops ?room= ? reopen the live session.
+  const active = loadActiveRoom();
+  if (active) {
+    const code = formatCode(active.code);
+    if (isFullCode(code)) {
+      const url = new URL(location.href);
+      url.pathname = '/app';
+      url.searchParams.set('room', code);
+      history.replaceState({ view: 'room' }, '', url);
+      return { view: 'room', code, asHost: active.asHost };
+    }
   }
   if (base === 'market' || base === 'login' || base === 'register') return { view: 'home', code: '' };
   return { view: 'home', code: '' };
@@ -84,7 +107,10 @@ function AppRoutes() {
     if (loading) return;
     const next = routeFromUrl(settings.instantJoin, Boolean(user));
     setCode(next.code);
-    setAsHost(Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1'));
+    const hostFlag =
+      next.asHost === true ||
+      Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1');
+    setAsHost(hostFlag);
     setView(next.view);
     setBoot(false);
     if (user && (location.pathname === '/login' || location.pathname === '/register')) {
@@ -95,7 +121,7 @@ function AppRoutes() {
       const path = location.pathname.replace(/\/+$/, '') || '/';
       if (!user && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge') {
         navigate('/login', true);
-      } else if (user && (path === '/' || path === '')) {
+      } else if (user && (path === '/' || path === '') && !next.code) {
         navigate('/app', true);
       }
     }
@@ -157,6 +183,7 @@ function AppRoutes() {
     if (host) sessionStorage.setItem(`lc-host:${formatted}`, '1');
     else sessionStorage.removeItem(`lc-host:${formatted}`);
     setRecent(rememberMeeting({ code: formatted, title, ts: Date.now() }));
+    saveActiveRoom({ code: formatted, asHost: host, title });
     try {
       await saveMeeting({ code: formatted, title, startedAt: Date.now(), attendees: 1 });
     } catch {
@@ -173,6 +200,7 @@ function AppRoutes() {
   }
 
   async function leave() {
+    clearActiveRoom();
     if (code) {
       try {
         await saveMeeting({ code, endedAt: Date.now() });

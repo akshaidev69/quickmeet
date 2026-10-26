@@ -394,6 +394,88 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     });
   }, [camOn, stream]);
 
+  // Native: mark meeting active so Home / app-switch can enter PiP instead of killing the room.
+  useEffect(() => {
+    let cancelled = false;
+    void import('../lib/native').then(({ isNativeApp }) => {
+      if (cancelled || !isNativeApp()) return;
+      void import('../lib/nativeMeeting').then((mod) => mod.setMeetingActive(true));
+    });
+    return () => {
+      cancelled = true;
+      void import('../lib/nativeMeeting').then((mod) => mod.setMeetingActive(false)).catch(() => undefined);
+    };
+  }, []);
+
+  // Keep active-room stamp fresh so process death still restores this meeting.
+  useEffect(() => {
+    let alive = true;
+    const touch = () => {
+      void import('../lib/storage').then(({ touchActiveRoom }) => {
+        if (alive) touchActiveRoom();
+      });
+    };
+    touch();
+    const timer = window.setInterval(touch, 60_000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [code]);
+
+  // Camera/mic freeze after backgrounding: reacquire dead tracks and restart local preview.
+  useEffect(() => {
+    let lastBump = 0;
+    let appHandle: { remove: () => Promise<void> } | null = null;
+
+    const reviveMedia = () => {
+      const now = Date.now();
+      if (now - lastBump < 900) return;
+      const current = streamRef.current;
+      const videoLive = Boolean(current?.getVideoTracks().some((track) => track.readyState === 'live'));
+      const audioLive = Boolean(current?.getAudioTracks().some((track) => track.readyState === 'live'));
+      const needVideo = camOn && !videoLive;
+      const needAudio = micOn && !audioLive;
+      if (needVideo || needAudio || !current) {
+        lastBump = now;
+        skipAcquire.current = false;
+        setDeviceNonce((value) => value + 1);
+      }
+      const preview = localVideoRef.current;
+      if (preview) {
+        if (preview.srcObject !== streamRef.current) preview.srcObject = streamRef.current;
+        void preview.play().catch(() => undefined);
+      }
+    };
+
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      window.setTimeout(reviveMedia, 280);
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    window.addEventListener('pageshow', onVisible);
+
+    void import('../lib/native').then(({ isNativeApp }) => {
+      if (!isNativeApp()) return;
+      void import('@capacitor/app').then(({ App }) => {
+        void App.addListener('appStateChange', ({ isActive }) => {
+          if (isActive) window.setTimeout(reviveMedia, 320);
+        }).then((handle) => {
+          appHandle = handle;
+        });
+      });
+    });
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+      void appHandle?.remove();
+    };
+  }, [camOn, micOn]);
+
   useEffect(() => {
     setScreenTrack(screenStream);
   }, [screenStream, setScreenTrack]);
@@ -584,7 +666,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
           void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
         });
         setScreenStream(display);
-        toast('Sharing your screen.');
+        toast('Sharing your screen ? app stays open in a small window.');
         return;
       }
     } catch (error) {

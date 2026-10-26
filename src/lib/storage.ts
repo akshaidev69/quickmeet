@@ -85,3 +85,53 @@ export function loadSchedule(): ScheduledMeeting[] {
 export function saveSchedule(items: ScheduledMeeting[]) {
   localStorage.setItem(scheduleKey, JSON.stringify(items));
 }
+
+const activeRoomKey = 'LetsConnect.activeRoom';
+const ACTIVE_ROOM_TTL_MS = 6 * 60 * 60 * 1000;
+
+export type ActiveRoom = {
+  code: string;
+  asHost: boolean;
+  title: string;
+  ts: number;
+};
+
+/** Persist the live meeting so Android process / WebView reloads reopen the room. */
+export function saveActiveRoom(room: Omit<ActiveRoom, 'ts'> & { ts?: number }) {
+  const payload: ActiveRoom = {
+    code: room.code,
+    asHost: room.asHost,
+    title: room.title,
+    ts: room.ts ?? Date.now(),
+  };
+  localStorage.setItem(activeRoomKey, JSON.stringify(payload));
+}
+
+export function loadActiveRoom(): ActiveRoom | null {
+  try {
+    const raw = localStorage.getItem(activeRoomKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as ActiveRoom;
+    if (!parsed?.code || typeof parsed.ts !== 'number') {
+      clearActiveRoom();
+      return null;
+    }
+    if (Date.now() - parsed.ts > ACTIVE_ROOM_TTL_MS) {
+      clearActiveRoom();
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function touchActiveRoom() {
+  const current = loadActiveRoom();
+  if (!current) return;
+  saveActiveRoom({ ...current, ts: Date.now() });
+}
+
+export function clearActiveRoom() {
+  localStorage.removeItem(activeRoomKey);
+}

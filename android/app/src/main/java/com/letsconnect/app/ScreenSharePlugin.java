@@ -75,6 +75,11 @@ public class ScreenSharePlugin extends Plugin {
             call.reject("Screen share is not supported on this device.");
             return;
         }
+        // MediaProjection UI leaves the activity — don't auto-PiP until capture is ready.
+        Activity activity = getActivity();
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).setSuppressPip(true);
+        }
         pendingStart = call;
         Intent intent = projectionManager.createScreenCaptureIntent();
         startActivityForResult(call, intent, "onProjectionResult");
@@ -85,6 +90,11 @@ public class ScreenSharePlugin extends Plugin {
         if (pendingStart == null) pendingStart = call;
         PluginCall startCall = pendingStart;
         pendingStart = null;
+
+        Activity activity = getActivity();
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).setSuppressPip(false);
+        }
 
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
             if (startCall != null) startCall.reject("Screen share permission denied.");
