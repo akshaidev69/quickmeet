@@ -8,9 +8,12 @@ function markShell() {
   const narrow = window.matchMedia('(max-width: 820px)').matches;
   const coarse = window.matchMedia('(pointer: coarse)').matches;
   const native = isNativeApp();
+  // Layout shell follows viewport width (and native) — never coarse pointer alone,
+  // or touch laptops/tablets get a broken phone layout on a wide screen.
   root.classList.toggle('is-native', native);
-  root.classList.toggle('is-mobile', native || narrow || coarse);
-  root.dataset.shell = native ? 'native' : narrow || coarse ? 'mobile' : 'desktop';
+  root.classList.toggle('is-mobile', native || narrow);
+  root.classList.toggle('is-touch', native || coarse);
+  root.dataset.shell = native ? 'native' : narrow ? 'mobile' : 'desktop';
 }
 
 markShell();

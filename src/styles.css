@@ -2446,7 +2446,29 @@ html.is-native .hub-grid {
   animation: none !important;
 }
 
-@media (max-width: 820px), (pointer: coarse) {
+/* Touch targets on any coarse pointer ? does NOT switch to phone layout */
+@media (pointer: coarse) {
+  button,
+  .cmd,
+  .leave,
+  .primary,
+  .secondary,
+  .google-btn,
+  .app-new-btn,
+  .hub-ghost {
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+    touch-action: manipulation;
+  }
+}
+
+/* Phone / small tablet layout ? width only (all devices compatible) */
+@media (max-width: 820px) {
   .phone-only { display: block !important; }
   .phone-only.hub-tabs,
   .phone-only.inline,
@@ -2456,6 +2478,26 @@ html.is-native .hub-grid {
   .menu-row.phone-only { display: grid !important; }
   .desk-only { display: none !important; }
   .phone-hide { display: none !important; }
+
+  .app-home {
+    width: 100%;
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+  }
+  .app-home-toolbar {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .app-new-btn {
+    width: 100%;
+  }
+  .app-home-list .hub-side {
+    display: flex;
+    flex-direction: column;
+  }
+  .app-home-tabs {
+    display: flex;
+  }
 
   /* Auth ? full-bleed card */
   .auth-page {
@@ -3319,10 +3361,44 @@ html.is-native .room-meet .tile canvas.fx-canvas {
     linear-gradient(180deg, #121916 0%, var(--bg) 44%, #101412 100%);
 }
 
-@media (min-width: 821px) {
+/* Tablet */
+@media (min-width: 821px) and (max-width: 1024px) {
   .desk-inline { display: inline-flex; align-items: center; }
   .app-home {
-    width: min(880px, 100%);
+    width: min(920px, 100%);
+    padding-top: 24px;
+    padding-bottom: 40px;
+  }
+  .app-home-toolbar {
+    max-width: 640px;
+  }
+  .app-home-tabs { display: none; }
+  .app-home-list .hub-side {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: start;
+  }
+  .app-home-list .hub-panel {
+    margin: 0;
+    overflow: visible;
+  }
+  .app-home-list .hub-panel.phone-hide { display: block !important; }
+  .app-home-list .hub-panel.desk-only { display: none !important; }
+  .room-meet .controls {
+    max-width: calc(100% - 16px);
+  }
+  .room-meet .grid.c1 .tile {
+    width: min(100%, 900px);
+    max-height: min(70vh, 640px);
+  }
+}
+
+/* Desktop */
+@media (min-width: 1025px) {
+  .desk-inline { display: inline-flex; align-items: center; }
+  .app-home {
+    width: min(980px, 100%);
     padding-top: 28px;
     padding-bottom: 48px;
   }
@@ -3335,6 +3411,7 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   .app-home-empty {
     padding: 40px 16px 32px;
   }
+  .app-home-tabs { display: none; }
   .app-home-list .hub-side {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -3346,11 +3423,6 @@ html.is-native .room-meet .tile canvas.fx-canvas {
     min-height: 0;
     overflow: visible;
   }
-  .app-home-list .hub-panel.desk-only,
-  .app-home-list .phone-hide {
-    display: block !important;
-  }
-  .app-home-tabs { display: none; }
   .app-home-list .hub-panel.phone-hide { display: block !important; }
   .app-home-list .hub-panel.desk-only { display: none !important; }
 }
