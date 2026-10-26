@@ -50,6 +50,7 @@ export function HomeScreen({
   const { user } = useAuth();
   const native = isNativeApp();
   const [code, setCode] = useState('');
+  const [joining, setJoining] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
   const [when, setWhen] = useState('');
@@ -57,6 +58,7 @@ export function HomeScreen({
   const [copiedUrl, setCopiedUrl] = useState('');
   const [cloud, setCloud] = useState<SavedMeeting[]>([]);
   const [tab, setTab] = useState<'meetings' | 'scheduled' | 'recent'>('meetings');
+  const [menuOpen, setMenuOpen] = useState(false);
   const ready = isFullCode(code);
   const firstName = user?.name?.split(' ')[0] || '';
   const greeting = (() => {
@@ -143,13 +145,280 @@ export function HomeScreen({
     }
   }
 
+  const list = (
+    <aside className="side-col hub-side">
+      <section className={`hub-panel hub-panel-meetings${tab !== 'meetings' ? ' phone-hide' : ''}`}>
+        <div className="hub-panel-head">
+          <h2>Your meetings</h2>
+          <span>{cloud.length}</span>
+        </div>
+        <p className="hint desk-only">Synced to your account ? not just this browser.</p>
+        {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
+        <ul className="list hub-list">
+          {cloud.map((item) => (
+            <li key={item.id}>
+              <div>
+                <strong>{item.title}</strong>
+                <span>
+                  {whenLabel(item.startedAt)} · {formatDuration(item.durationMs)}
+                </span>
+                <code>{item.code}</code>
+              </div>
+              <div className="row-actions">
+                <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                  Open
+                </button>
+                <button type="button" onClick={() => void forgetCloud(item.id)}>
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      {wifiUrls.length > 0 && (
+        <section className="hub-panel desk-only">
+          <h2>Wi-Fi access</h2>
+          <p className="hint">Open on another device on the same network.</p>
+          <ul className="list plain wifi-list">
+            {wifiUrls.map((url) => (
+              <li key={url}>
+                <code className="wifi-url">{url}</code>
+                <div className="row-actions">
+                  <button type="button" onClick={() => void copyWifi(url)}>
+                    {copiedUrl === url ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section className={`hub-panel hub-panel-scheduled${tab !== 'scheduled' ? ' phone-hide' : ''}`}>
+        <div className="card-head">
+          <h2>Scheduled</h2>
+          <button type="button" className="textbtn" onClick={() => setPlanning((open) => !open)}>
+            {planning ? 'Cancel' : 'Schedule'}
+          </button>
+        </div>
+        {planning && (
+          <form className="stack" onSubmit={createScheduled}>
+            <label className="field">
+              <span>Title</span>
+              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Design review" />
+            </label>
+            <label className="field">
+              <span>Date and time</span>
+              <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} required />
+            </label>
+            <button className="secondary" type="submit">
+              Create meeting code
+            </button>
+          </form>
+        )}
+        {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled yet.</p>}
+        <ul className="list hub-list">
+          {schedule.map((item) => (
+            <li key={item.id}>
+              <div>
+                <strong>{item.title}</strong>
+                <span>{item.when ? new Date(item.when).toLocaleString() : 'No time set'}</span>
+                <code>{item.code}</code>
+              </div>
+              <div className="row-actions">
+                <button type="button" onClick={() => join(item.code, item.title, 'host')}>
+                  Start
+                </button>
+                <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <section className={`hub-panel hub-panel-recent${tab !== 'recent' ? ' phone-hide' : ''}`}>
+        <h2>Recent on this device</h2>
+        {recent.length === 0 && <p className="empty">Local shortcuts for this device.</p>}
+        <ul className="list hub-list">
+          {recent.map((item) => (
+            <li key={item.code}>
+              <div>
+                <strong>{item.title}</strong>
+                <span>{whenLabel(item.ts)}</span>
+                <code>{item.code}</code>
+              </div>
+              <div className="row-actions">
+                <button type="button" onClick={() => join(item.code, item.title)}>
+                  Rejoin
+                </button>
+                <button type="button" onClick={() => onForget(item.code)}>
+                  Remove
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </section>
+
+      <p className="fine hub-fine desk-only">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
+    </aside>
+  );
+
   return (
     <main className={`home home-hub${native ? ' home-native' : ''}`}>
       <div className="hub-glow" aria-hidden="true" />
       <div className="hub-grid" aria-hidden="true" />
 
-      <div className="home-wrap hub-wrap">
-        <header className="hub-top">
+      {/* ?? Mobile / native app shell ?? */}
+      <div className="app-home">
+        <header className="app-home-top">
+          <div className="app-home-brand">
+            <Logo size={28} />
+            <strong>LetsConnect</strong>
+          </div>
+          <div className="app-home-top-actions">
+            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
+            <button
+              type="button"
+              className="app-avatar-btn"
+              aria-label="Account menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              {user?.avatar ? (
+                <img src={user.avatar} alt="" />
+              ) : (
+                <span>{(user?.name || 'A').slice(0, 1)}</span>
+              )}
+            </button>
+          </div>
+        </header>
+
+        {menuOpen && (
+          <>
+            <button type="button" className="app-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
+            <div className="app-account-menu" role="menu">
+              <div className="app-account-head">
+                <strong>{user?.name || 'You'}</strong>
+                <span>{user?.email || (user?.plan === 'free' ? 'Free plan' : user?.plan)}</span>
+              </div>
+              <label className="field app-name-field">
+                <span>Display name</span>
+                <input
+                  value={settings.name}
+                  maxLength={40}
+                  placeholder="How people see you"
+                  onChange={(event) => onSettings({ ...settings, name: event.target.value })}
+                />
+              </label>
+              <label className="check app-instant">
+                <input
+                  type="checkbox"
+                  checked={settings.instantJoin}
+                  onChange={(event) => onSettings({ ...settings, instantJoin: event.target.checked })}
+                />
+                <span>Join instantly (skip camera check)</span>
+              </label>
+              <button
+                type="button"
+                className="app-menu-logout"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLogout();
+                }}
+              >
+                Log out
+              </button>
+            </div>
+          </>
+        )}
+
+        <section className="app-home-hero">
+          <p className="app-home-hello">
+            {greeting}
+            {firstName ? `, ${firstName}` : ''}
+          </p>
+          <h1>Start a meeting</h1>
+        </section>
+
+        <section className="app-home-actions">
+          <button type="button" className="app-action-primary" onClick={start}>
+            <span className="app-action-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
+                <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span>
+              <strong>New meeting</strong>
+              <small>Create a room and invite others</small>
+            </span>
+          </button>
+          <button type="button" className="app-action-secondary" onClick={() => setJoining((open) => !open)}>
+            <span className="app-action-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="5" width="18" height="14" rx="2" />
+                <path d="M8 12h8M12 8v8" strokeLinecap="round" />
+              </svg>
+            </span>
+            <span>
+              <strong>Join with a code</strong>
+              <small>Enter abc-defg-hij</small>
+            </span>
+          </button>
+        </section>
+
+        {joining && (
+          <section className="app-join-sheet">
+            <div className="join-row app-join-row">
+              <input
+                value={code}
+                placeholder="abc-defg-hij"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="text"
+                autoFocus
+                aria-label="Meeting code"
+                onChange={(event) => setCode(formatCode(event.target.value))}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && ready) {
+                    event.preventDefault();
+                    join(code, 'Joined meeting');
+                  }
+                }}
+              />
+              <button type="button" className="primary" disabled={!ready} onClick={() => join(code, 'Joined meeting')}>
+                Join
+              </button>
+            </div>
+          </section>
+        )}
+
+        <nav className="hub-tabs app-home-tabs" aria-label="Meeting lists">
+          <button type="button" className={tab === 'meetings' ? 'active' : ''} onClick={() => setTab('meetings')}>
+            Meetings
+            <span>{cloud.length}</span>
+          </button>
+          <button type="button" className={tab === 'scheduled' ? 'active' : ''} onClick={() => setTab('scheduled')}>
+            Planned
+            <span>{schedule.length}</span>
+          </button>
+          <button type="button" className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>
+            Recent
+            <span>{recent.length}</span>
+          </button>
+        </nav>
+
+        <div className="app-home-list">{list}</div>
+      </div>
+
+      {/* ?? Desktop hub ?? */}
+      <div className="home-wrap hub-wrap desk-only-grid">
+        <header className="hub-top desk-only">
           <button type="button" className="hub-logo" onClick={onMarketing} aria-label="LetsConnect home">
             <Logo size={32} />
             <span>LetsConnect</span>
@@ -169,7 +438,7 @@ export function HomeScreen({
               </div>
             )}
             <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-            <button type="button" className="hub-ghost desk-only" onClick={onMarketing}>
+            <button type="button" className="hub-ghost" onClick={onMarketing}>
               Product
             </button>
             <button type="button" className="hub-ghost hub-logout" onClick={onLogout}>
@@ -178,14 +447,16 @@ export function HomeScreen({
           </div>
         </header>
 
-        <section className="hub-hero">
-          <p className="hub-kicker">{greeting}{firstName ? `, ${firstName}` : ''}</p>
-          <h1 className="desk-only">LetsConnect</h1>
-          <h1 className="phone-only hub-hero-title">Ready when you are</h1>
+        <section className="hub-hero desk-only">
+          <p className="hub-kicker">
+            {greeting}
+            {firstName ? `, ${firstName}` : ''}
+          </p>
+          <h1>LetsConnect</h1>
           <p className="hub-lead">Start a room or join with a code. Meetings stay on your account.</p>
         </section>
 
-        <section className="hub-start">
+        <section className="hub-start desk-only">
           <label className="field">
             <span>Your name in meetings</span>
             <input
@@ -236,141 +507,7 @@ export function HomeScreen({
           </label>
         </section>
 
-        <nav className="hub-tabs phone-only" aria-label="Meeting lists">
-          <button type="button" className={tab === 'meetings' ? 'active' : ''} onClick={() => setTab('meetings')}>
-            Meetings
-            <span>{cloud.length}</span>
-          </button>
-          <button type="button" className={tab === 'scheduled' ? 'active' : ''} onClick={() => setTab('scheduled')}>
-            Planned
-            <span>{schedule.length}</span>
-          </button>
-          <button type="button" className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>
-            Recent
-            <span>{recent.length}</span>
-          </button>
-        </nav>
-
-        <aside className="side-col hub-side">
-          <section className={`hub-panel hub-panel-meetings${tab !== 'meetings' ? ' phone-hide' : ''}`}>
-            <div className="hub-panel-head">
-              <h2>Your meetings</h2>
-              <span>{cloud.length}</span>
-            </div>
-            <p className="hint desk-only">Synced to your account ? not just this browser.</p>
-            {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
-            <ul className="list hub-list">
-              {cloud.map((item) => (
-                <li key={item.id}>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>
-                      {whenLabel(item.startedAt)} Â· {formatDuration(item.durationMs)}
-                    </span>
-                    <code>{item.code}</code>
-                  </div>
-                  <div className="row-actions">
-                    <button type="button" onClick={() => join(item.code, item.title, 'host')}>
-                      Open
-                    </button>
-                    <button type="button" onClick={() => void forgetCloud(item.id)}>
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          {wifiUrls.length > 0 && (
-            <section className="hub-panel desk-only">
-              <h2>Wi-Fi access</h2>
-              <p className="hint">Open on another device on the same network.</p>
-              <ul className="list plain wifi-list">
-                {wifiUrls.map((url) => (
-                  <li key={url}>
-                    <code className="wifi-url">{url}</code>
-                    <div className="row-actions">
-                      <button type="button" onClick={() => void copyWifi(url)}>
-                        {copiedUrl === url ? 'Copied' : 'Copy'}
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          )}
-
-          <section className={`hub-panel hub-panel-scheduled${tab !== 'scheduled' ? ' phone-hide' : ''}`}>
-            <div className="card-head">
-              <h2>Scheduled</h2>
-              <button type="button" className="textbtn" onClick={() => setPlanning((open) => !open)}>
-                {planning ? 'Cancel' : 'Schedule'}
-              </button>
-            </div>
-            {planning && (
-              <form className="stack" onSubmit={createScheduled}>
-                <label className="field">
-                  <span>Title</span>
-                  <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Design review" />
-                </label>
-                <label className="field">
-                  <span>Date and time</span>
-                  <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} required />
-                </label>
-                <button className="secondary" type="submit">
-                  Create meeting code
-                </button>
-              </form>
-            )}
-            {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled yet.</p>}
-            <ul className="list hub-list">
-              {schedule.map((item) => (
-                <li key={item.id}>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>{item.when ? new Date(item.when).toLocaleString() : 'No time set'}</span>
-                    <code>{item.code}</code>
-                  </div>
-                  <div className="row-actions">
-                    <button type="button" onClick={() => join(item.code, item.title, 'host')}>
-                      Start
-                    </button>
-                    <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section className={`hub-panel hub-panel-recent${tab !== 'recent' ? ' phone-hide' : ''}`}>
-            <h2>Recent on this device</h2>
-            {recent.length === 0 && <p className="empty">Local shortcuts for this device.</p>}
-            <ul className="list hub-list">
-              {recent.map((item) => (
-                <li key={item.code}>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <span>{whenLabel(item.ts)}</span>
-                    <code>{item.code}</code>
-                  </div>
-                  <div className="row-actions">
-                    <button type="button" onClick={() => join(item.code, item.title)}>
-                      Rejoin
-                    </button>
-                    <button type="button" onClick={() => onForget(item.code)}>
-                      Remove
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <p className="fine hub-fine desk-only">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
-        </aside>
+        <div className="desk-only-block">{list}</div>
       </div>
     </main>
   );

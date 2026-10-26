@@ -564,26 +564,38 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     if (screenStream) {
       screenStream.getTracks().forEach((track) => track.stop());
       setScreenStream(null);
+      try {
+        const { stopNativeScreenShare } = await import('../lib/nativeScreenShare');
+        await stopNativeScreenShare();
+      } catch {
+        /* ignore */
+      }
       return;
     }
-    const canShare = typeof navigator.mediaDevices?.getDisplayMedia === 'function';
-    if (!canShare) {
-      // Android WebView often lacks getDisplayMedia ? open the live room in Chrome to share.
-      try {
-        const { openExternalBrowser } = await import('../lib/native');
-        const { isNativeApp } = await import('../lib/native');
-        if (isNativeApp()) {
-          const url = new URL(location.href);
-          url.searchParams.set('room', code);
-          url.searchParams.set('share', '1');
-          await openExternalBrowser(url.toString());
-          toast('Opened in Chrome ? tap Screen there to share.');
-          return;
-        }
-      } catch {
-        /* fall through */
+
+    try {
+      const { isNativeApp } = await import('../lib/native');
+      const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
+      if (isNativeApp() && (await nativeScreenShareAvailable())) {
+        const display = await startNativeScreenShare();
+        display.getVideoTracks()[0]?.addEventListener('ended', () => {
+          display.getTracks().forEach((track) => track.stop());
+          setScreenStream((current) => (current === display ? null : current));
+          void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
+        });
+        setScreenStream(display);
+        toast('Sharing your screen.');
+        return;
       }
-      toast('Screen share needs Chrome on this device.');
+    } catch (error) {
+      if (error instanceof Error && /denied|permission|cancel/i.test(error.message)) {
+        toast('Screen share canceled.');
+        return;
+      }
+    }
+
+    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+      toast('Screen share is not available on this device.');
       return;
     }
     try {

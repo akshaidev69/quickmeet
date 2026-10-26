@@ -23,6 +23,7 @@ public class MainActivity extends BridgeActivity {
         // Register before BridgeActivity wires the WebView bridge.
         registerPlugin(BrowserPlugin.class);
         registerPlugin(AppPlugin.class);
+        registerPlugin(ScreenSharePlugin.class);
         super.onCreate(savedInstanceState);
         requestMeetingPermissions();
     }
