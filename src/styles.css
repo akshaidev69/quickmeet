@@ -65,6 +65,43 @@ button { cursor: pointer; }
 :focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
 ::selection { background: #b7e4d2; }
 
+/* LetsConnect scrollbar ? thin mint rail, no nested grey bars */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 70%, #086447) transparent;
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 55%, transparent) transparent;
+}
+*::-webkit-scrollbar {
+  width: 11px;
+  height: 11px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 4px 0;
+}
+*::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #fff), var(--accent-strong));
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent-ink) 18%, transparent);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--accent), var(--accent-strong));
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-corner { background: transparent; }
+:root[data-theme="dark"] *::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #7dcea0, #3d8f64);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
 .home {
   min-height: 100%;
   min-height: 100dvh;
@@ -73,6 +110,7 @@ button { cursor: pointer; }
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  scrollbar-gutter: stable;
 }
 .home-hub {
   --hub-ink: #10241c;
@@ -2160,6 +2198,11 @@ kbd {
 }
 .room-meet .hand-badge span { display: inline; }
 .room-meet .controls {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  justify-content: center;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   border: 1px solid var(--line);
   border-radius: 999px;
@@ -2168,18 +2211,23 @@ kbd {
   width: max-content;
   max-width: calc(100% - 24px);
   margin: 0 auto 18px;
-  padding: 8px 10px;
-  gap: 4px;
-  flex-wrap: nowrap;
+  padding: 6px 8px;
+  gap: 2px;
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .room-meet .cgroup {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
   gap: 2px;
   padding: 0;
+  margin: 0;
   border-radius: 0;
-  background: transparent;
-  border: 0;
-  box-shadow: none;
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
   backdrop-filter: none;
 }
 .room-meet .cgroup.meet-core,
@@ -2189,40 +2237,39 @@ kbd {
   flex: 0 0 auto;
 }
 .room-meet .cgroup.meet-tools,
-.room-meet .cgroup.meet-panels {
-  padding-left: 6px;
-  margin-left: 2px;
-  border-left: 1px solid var(--line);
-}
-.room-meet .leave-group {
-  padding-left: 6px;
-  margin-left: 2px;
-  border-left: 1px solid transparent;
+.room-meet .cgroup.meet-panels,
+.room-meet .cgroup.leave-group {
+  padding-left: 8px;
+  margin-left: 4px;
+  border-left: 1px solid var(--line) !important;
 }
 .room-meet .grid.c1 {
-  max-width: 960px;
+  max-width: min(1100px, 100%);
   margin: 0 auto;
   width: 100%;
+  height: 100%;
+  place-content: center;
 }
 .room-meet .grid.c1 .tile {
-  width: min(100%, 860px);
-  max-height: min(68vh, 620px);
+  width: min(100%, 1040px);
+  max-height: min(78vh, 720px);
+  height: auto;
 }
 .room-meet .banners {
-  max-width: 960px;
+  max-width: min(1100px, 100%);
   margin: 0 auto;
   width: 100%;
 }
 .room-meet .cmd,
 .room-meet .leave {
-  width: 46px;
-  min-width: 46px;
-  max-width: 46px;
-  height: 46px;
+  width: 44px;
+  min-width: 44px;
+  max-width: 44px;
+  height: 44px;
   border-radius: 50%;
   padding: 0;
   gap: 0;
-  flex-direction: row;
+  flex-direction: row !important;
   color: var(--accent-ink);
   background: transparent;
 }
@@ -2231,16 +2278,20 @@ kbd {
 .room-meet .cmd:hover { background: var(--accent-soft); }
 .room-meet .cmd.live { background: var(--accent-soft); color: var(--accent-ink); border-radius: 50%; }
 .room-meet .cmd.danger {
-  background: color-mix(in srgb, #d93025 12%, var(--surface));
+  background: color-mix(in srgb, #d93025 14%, var(--surface));
   color: #c5221f;
   border-radius: 50%;
+}
+:root[data-theme="dark"] .room-meet .cmd.danger {
+  color: #f6aea9;
+  background: color-mix(in srgb, #d93025 22%, var(--surface));
 }
 .room-meet .cmd.hand-live {
   background: #e8f0fe;
   color: #1a73e8;
 }
 .room-meet .leave-group {
-  padding: 8px;
+  padding-left: 8px !important;
   gap: 0;
 }
 .room-meet .leave {
@@ -3190,12 +3241,44 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   font-family: "Fraunces", Georgia, serif;
   font-size: 1.35rem;
   letter-spacing: -0.03em;
+  color: var(--text);
 }
 .app-home-empty > p {
   margin: 0;
   color: var(--muted);
   font-size: 14px;
   max-width: 28ch;
+}
+.app-home-hero h1 {
+  color: var(--text);
+}
+:root[data-theme="dark"] .app-home-empty h2,
+:root[data-theme="dark"] .app-home-hero h1 {
+  color: #f1f3f4;
+}
+:root[data-theme="dark"] .app-home-empty > p {
+  color: #bdc1c6;
+}
+.app-home-list,
+.app-home-list .hub-side,
+.app-home-list .hub-panel,
+.app-home-list .hub-list {
+  overflow: visible !important;
+  max-height: none !important;
+}
+.app-home-list .hub-list-more {
+  margin-top: 8px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font-weight: 700;
+  font-size: 13px;
+  min-height: 36px;
+  border-radius: 10px;
+}
+.app-home-list .hub-list-more:hover {
+  background: var(--accent-soft);
 }
 .app-today-list h2 {
   margin: 0 0 8px;
@@ -3260,7 +3343,8 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   }
   .app-home-list .hub-panel {
     margin: 0;
-    min-height: 180px;
+    min-height: 0;
+    overflow: visible;
   }
   .app-home-list .hub-panel.desk-only,
   .app-home-list .phone-hide {

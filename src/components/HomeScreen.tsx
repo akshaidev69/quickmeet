@@ -58,6 +58,9 @@ export function HomeScreen({
   const [cloud, setCloud] = useState<SavedMeeting[]>([]);
   const [tab, setTab] = useState<'meetings' | 'scheduled' | 'recent'>('meetings');
   const [menuOpen, setMenuOpen] = useState(false);
+  const [showAllMeetings, setShowAllMeetings] = useState(false);
+  const [showAllRecent, setShowAllRecent] = useState(false);
+  const LIST_PREVIEW = 4;
   const ready = isFullCode(code);
   const firstName = user?.name?.split(' ')[0] || '';
   const greeting = (() => {
@@ -169,6 +172,9 @@ export function HomeScreen({
     }
   }
 
+  const cloudVisible = showAllMeetings ? cloud : cloud.slice(0, LIST_PREVIEW);
+  const recentVisible = showAllRecent ? recent : recent.slice(0, LIST_PREVIEW);
+
   const list = (
     <aside className="side-col hub-side">
       <section className={`hub-panel hub-panel-meetings${tab !== 'meetings' ? ' phone-hide' : ''}`}>
@@ -179,7 +185,7 @@ export function HomeScreen({
         <p className="hint desk-only">Synced to your account ? not just this browser.</p>
         {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
         <ul className="list hub-list">
-          {cloud.map((item) => (
+          {cloudVisible.map((item) => (
             <li key={item.id}>
               <div>
                 <strong>{item.title}</strong>
@@ -199,6 +205,11 @@ export function HomeScreen({
             </li>
           ))}
         </ul>
+        {cloud.length > LIST_PREVIEW && (
+          <button type="button" className="hub-list-more" onClick={() => setShowAllMeetings((open) => !open)}>
+            {showAllMeetings ? 'Show less' : `Show all ${cloud.length}`}
+          </button>
+        )}
       </section>
 
       {wifiUrls.length > 0 && (
@@ -268,7 +279,7 @@ export function HomeScreen({
         <h2>Recent on this device</h2>
         {recent.length === 0 && <p className="empty">Local shortcuts for this device.</p>}
         <ul className="list hub-list">
-          {recent.map((item) => (
+          {recentVisible.map((item) => (
             <li key={item.code}>
               <div>
                 <strong>{item.title}</strong>
@@ -286,6 +297,11 @@ export function HomeScreen({
             </li>
           ))}
         </ul>
+        {recent.length > LIST_PREVIEW && (
+          <button type="button" className="hub-list-more" onClick={() => setShowAllRecent((open) => !open)}>
+            {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
+          </button>
+        )}
       </section>
 
       <p className="fine hub-fine desk-only">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
@@ -424,12 +440,6 @@ export function HomeScreen({
               </div>
               <h2>No meetings scheduled for today</h2>
               <p>Schedule a meeting or enjoy the free time.</p>
-              <button type="button" className="app-new-btn app-new-btn-lg" onClick={start}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
-                  <path d="M12 5v14M5 12h14" strokeLinecap="round" />
-                </svg>
-                New
-              </button>
             </>
           ) : (
             <div className="app-today-list">

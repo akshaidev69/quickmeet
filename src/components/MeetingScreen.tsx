@@ -238,6 +238,8 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const lastCaption = useRef(0);
   const streamRef = useRef<MediaStream | null>(initialStream);
   const skipAcquire = useRef(Boolean(initialStream));
+  const micOnRef = useRef(true);
+  const camOnRef = useRef(true);
   const screenRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -329,12 +331,23 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   chatRef.current = chat;
   const hasMic = Boolean(stream?.getAudioTracks().some((track) => track.readyState === 'live'));
   const hasCam = Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live'));
+  micOnRef.current = micOn;
+  camOnRef.current = camOn;
 
   function toggleMic() {
     setMicOn((on) => {
-      if (on) return false;
+      if (on) {
+        streamRef.current?.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        return false;
+      }
       const live = streamRef.current?.getAudioTracks().some((track) => track.readyState === 'live');
-      if (!live) {
+      if (live) {
+        streamRef.current?.getAudioTracks().forEach((track) => {
+          track.enabled = true;
+        });
+      } else {
         skipAcquire.current = false;
         setDeviceNonce((value) => value + 1);
       }
@@ -344,9 +357,18 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
 
   function toggleCam() {
     setCamOn((on) => {
-      if (on) return false;
+      if (on) {
+        streamRef.current?.getVideoTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        return false;
+      }
       const live = streamRef.current?.getVideoTracks().some((track) => track.readyState === 'live');
-      if (!live) {
+      if (live) {
+        streamRef.current?.getVideoTracks().forEach((track) => {
+          track.enabled = true;
+        });
+      } else {
         skipAcquire.current = false;
         setDeviceNonce((value) => value + 1);
       }
@@ -379,18 +401,24 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
         return;
       }
       result.stream.getAudioTracks().forEach((track) => {
-        track.enabled = micOn;
+        track.enabled = micOnRef.current;
       });
       result.stream.getVideoTracks().forEach((track) => {
-        track.enabled = camOn;
+        track.enabled = camOnRef.current;
       });
       const previous = streamRef.current;
       if (previous && previous !== result.stream) previous.getTracks().forEach((track) => track.stop());
       streamRef.current = result.stream;
       setStream(result.stream);
       if (result.warning) toast(result.warning);
-      if (!result.audio) setMicOn(false);
-      if (!result.video) setCamOn(false);
+      if (!result.audio) {
+        micOnRef.current = false;
+        setMicOn(false);
+      }
+      if (!result.video) {
+        camOnRef.current = false;
+        setCamOn(false);
+      }
     });
     return () => {
       cancel = true;
@@ -476,10 +504,10 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
         return;
       }
       current.getAudioTracks().forEach((track) => {
-        track.enabled = micOn;
+        track.enabled = micOnRef.current;
       });
       current.getVideoTracks().forEach((track) => {
-        track.enabled = camOn;
+        track.enabled = camOnRef.current;
       });
       const preview = localVideoRef.current;
       if (preview) {
@@ -514,7 +542,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       window.removeEventListener('pageshow', onVisible);
       void appHandle?.remove();
     };
-  }, [camOn, micOn]);
+  }, []);
 
   useEffect(() => {
     setScreenTrack(screenStream);
