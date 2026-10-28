@@ -16,7 +16,15 @@ function lanAddresses() {
 
 const useLocalHttps = process.env.LETSCONNECT_HTTP !== '1' && !process.env.RENDER;
 
+const buildVersion =
+  process.env.RENDER_GIT_COMMIT?.slice(0, 7) ||
+  process.env.VITE_BUILD_VERSION ||
+  `dev-${new Date().toISOString().slice(0, 10)}`;
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_BUILD_VERSION': JSON.stringify(buildVersion),
+  },
   plugins: [
     react(),
     ...(useLocalHttps ? [basicSsl()] : []),

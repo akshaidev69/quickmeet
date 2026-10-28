@@ -33,6 +33,8 @@ export type MeetingSummaryData = {
   followUpCount?: number;
   recordingAvailable?: boolean;
   presence?: ParticipantPresence[];
+  endedForEveryone?: boolean;
+  guest?: boolean;
 };
 
 type Props = {
@@ -216,6 +218,11 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
           <button type="button" className="secondary" onClick={onDashboard}>
             Back to home
           </button>
+          {data.guest ? (
+            <button type="button" className="secondary" onClick={() => (location.href = '/register')}>
+              Create an account
+            </button>
+          ) : null}
           {showRejoin ? (
             <button type="button" className="primary" onClick={onRejoin}>
               Rejoin
@@ -229,7 +236,11 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
       </header>
 
       <section className="summary-hero" aria-labelledby="summary-hero-title">
-        <p className="summary-hero-kicker">Meeting ended · {formatMeetingRange(data.startedAt, data.endedAt)}</p>
+        <p className="summary-hero-kicker">
+          {data.endedForEveryone
+            ? `Meeting ended · ${formatMeetingRange(data.startedAt, data.endedAt)}`
+            : 'You left the meeting'}
+        </p>
         <h1 id="summary-hero-title">{data.title || 'LetsConnect meeting'}</h1>
         <p className="summary-hero-privacy">Private to people who were in this call · Code {data.code}</p>
         <dl className="summary-stats">
@@ -361,7 +372,7 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
                   aria-pressed={rating === star}
                   onClick={() => setRating(star)}
                 >
-                  {'\u2605'}
+                  {'★'}
                 </button>
               ))}
             </div>

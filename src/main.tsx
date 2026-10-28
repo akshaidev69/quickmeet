@@ -21,3 +21,9 @@ window.matchMedia('(max-width: 820px)').addEventListener('change', markShell);
 window.matchMedia('(pointer: coarse)').addEventListener('change', markShell);
 
 createRoot(document.getElementById('root')!).render(<App />);
+
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  window.addEventListener('load', () => {
+    void navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+  });
+}

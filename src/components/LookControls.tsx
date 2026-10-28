@@ -4,8 +4,9 @@ import type { LookStatus } from '../lib/look';
 import type { BackgroundId, ThemeMode } from '../types';
 
 export const looks: { id: BackgroundId; label: string }[] = [
-  { id: 'none', label: 'Real' },
-  { id: 'blur', label: 'Blur' },
+  { id: 'none', label: 'Off' },
+  { id: 'blur', label: 'Light blur' },
+  { id: 'blurStrong', label: 'Strong blur' },
   { id: 'office', label: 'Office' },
   { id: 'studio', label: 'Room' },
   { id: 'home', label: 'Home' },

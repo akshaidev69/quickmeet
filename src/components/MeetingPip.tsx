@@ -281,6 +281,18 @@ export function MeetingPip({
     async (fromHide = false) => {
       paintFallback();
       try {
+        const { isNativeApp } = await import('../lib/native');
+        if (isNativeApp()) {
+          const { enterPip } = await import('../lib/nativeMeeting');
+          if (await enterPip()) {
+            onGestureRef.current();
+            return true;
+          }
+        }
+      } catch {
+        /* web or older APK */
+      }
+      try {
         await openVideoPip();
         onGestureRef.current();
         return true;

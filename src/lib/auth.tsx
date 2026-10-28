@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { fetchMe, loginAccount, logoutAccount, registerAccount, type AuthUser } from './api';
+import { clearProfileCache } from './storage';
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -39,16 +40,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       refresh,
       setUser,
       async login(email, password) {
+        clearProfileCache();
         const data = await loginAccount({ email, password });
         setUser(data.user);
         return data.user;
       },
       async register(name, email, password) {
+        clearProfileCache();
         const data = await registerAccount({ name, email, password });
         setUser(data.user);
         return data.user;
       },
       async logout() {
+        clearProfileCache();
         await logoutAccount();
         setUser(null);
       },

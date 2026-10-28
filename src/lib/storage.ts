@@ -33,7 +33,7 @@ export const defaultSettings: Settings = {
 };
 
 const themes = new Set<ThemeMode>(['light', 'dark']);
-const backgrounds = new Set<BackgroundId>(['none', 'blur', 'office', 'studio', 'home', 'custom']);
+const backgrounds = new Set<BackgroundId>(['none', 'blur', 'blurStrong', 'office', 'studio', 'home', 'custom']);
 
 export function loadSettings(): Settings {
   try {
@@ -134,4 +134,18 @@ export function touchActiveRoom() {
 
 export function clearActiveRoom() {
   localStorage.removeItem(activeRoomKey);
+}
+
+/** Keep theme only — drop cached profile fields on login/logout. */
+export function clearProfileCache() {
+  const theme = loadSettings().theme;
+  saveSettings({ ...defaultSettings, theme });
+  clearActiveRoom();
+  try {
+    Object.keys(sessionStorage)
+      .filter((key) => key.startsWith('lc-room-name:') || key.startsWith('lc-peer:') || key.startsWith('lc-host:'))
+      .forEach((key) => sessionStorage.removeItem(key));
+  } catch {
+    /* private mode */
+  }
 }

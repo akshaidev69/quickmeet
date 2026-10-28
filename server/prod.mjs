@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { attachSignal, roomIsLive } from './signalCore.mjs';
 import { handleAuthApi } from './authApi.mjs';
 import { proxyFirebaseAuth } from './authHandlerProxy.mjs';
+import { BUILD_VERSION, securityHeaders } from './security.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dist = path.join(__dirname, '..', 'dist');
@@ -16,6 +17,8 @@ const SPA_ROUTES = new Set([
   '/login',
   '/register',
   '/signup',
+  '/privacy',
+  '/terms',
   '/auth/google-bridge',
 ]);
 
@@ -41,19 +44,22 @@ function contentType(filePath) {
   );
 }
 
-function sendFile(res, filePath, status = 200) {
+function sendFile(res, req, filePath, status = 200) {
   const data = fs.readFileSync(filePath);
+  const html = path.extname(filePath) === '.html';
   res.writeHead(status, {
     'Content-Type': contentType(filePath),
-    'Cache-Control': path.extname(filePath) === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable',
+    'Cache-Control': html ? 'no-cache' : 'public, max-age=31536000, immutable',
+    ...securityHeaders(req),
   });
   res.end(data);
 }
 
-function sendJson(res, status, data) {
+function sendJson(res, req, status, data) {
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...securityHeaders(req),
   });
   res.end(JSON.stringify(data));
 }
@@ -102,27 +108,27 @@ const server = http.createServer(async (req, res) => {
     if (await proxyFirebaseAuth(req, res, url.pathname, url.search || '')) return;
 
     if (pathname === '/api/health' && req.method === 'GET') {
-      sendJson(res, 200, { status: 'ok', app: 'LetsConnect' });
+      sendJson(res, req, 200, { status: 'ok', app: 'LetsConnect', version: BUILD_VERSION });
       return;
     }
 
     if (pathname === '/api/network' && req.method === 'GET') {
-      sendJson(res, 200, { https: true, port, addresses: [], urls: [] });
+      sendJson(res, req, 200, { https: true, port, addresses: [], urls: [] });
       return;
     }
 
     if (pathname.startsWith('/api/rooms/') && req.method === 'GET') {
       const code = pathname.slice('/api/rooms/'.length).toLowerCase();
       if (!roomIsLive(code)) {
-        sendJson(res, 404, { error: 'Meeting not found.' });
+        sendJson(res, req, 404, { error: 'Meeting not found.' });
         return;
       }
-      sendJson(res, 200, { code, live: true });
+      sendJson(res, req, 200, { code, live: true });
       return;
     }
 
     if (pathname.startsWith('/api/')) {
-      sendJson(res, 404, { error: 'Not found.' });
+      sendJson(res, req, 404, { error: 'Not found.' });
       return;
     }
 
@@ -136,14 +142,14 @@ const server = http.createServer(async (req, res) => {
     const safe = path.normalize(filePathName).replace(/^(\.\.[/\\])+/, '');
     const filePath = path.join(dist, safe);
     if (filePath.startsWith(dist) && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      sendFile(res, filePath);
+      sendFile(res, req, filePath);
       return;
     }
 
     if (isSpaPath(pathname)) {
       const fallback = path.join(dist, 'index.html');
       if (fs.existsSync(fallback)) {
-        sendFile(res, fallback);
+        sendFile(res, req, fallback);
         return;
       }
     }

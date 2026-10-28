@@ -46,6 +46,26 @@ export async function ensurePg() {
       `);
       await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_email_norm_uidx ON users (email_norm)`);
       await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS users_google_id_uidx ON users (google_id) WHERE google_id IS NOT NULL`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS meetings (
+          id TEXT PRIMARY KEY,
+          user_id TEXT NOT NULL,
+          code TEXT NOT NULL UNIQUE,
+          title TEXT NOT NULL,
+          started_at BIGINT NOT NULL,
+          ended_at BIGINT,
+          duration_ms BIGINT NOT NULL DEFAULT 0,
+          attendees INTEGER NOT NULL DEFAULT 1,
+          notes TEXT NOT NULL DEFAULT ''
+        );
+      `);
+      await client.query(`CREATE INDEX IF NOT EXISTS meetings_user_idx ON meetings (user_id, started_at DESC)`);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS waitlist (
+          email TEXT PRIMARY KEY,
+          created_at BIGINT NOT NULL
+        );
+      `);
     } finally {
       client.release();
     }
@@ -160,4 +180,114 @@ export async function pgUpdateUserProfile(userId, { name }) {
     await getPool().query('UPDATE users SET name = $2 WHERE id = $1', [userId, String(name).trim().slice(0, 60)]);
   }
   return pgFindUserById(userId);
+}
+
+function mapMeeting(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id,
+    code: row.code,
+    title: row.title,
+    startedAt: Number(row.started_at),
+    endedAt: row.ended_at == null ? null : Number(row.ended_at),
+    durationMs: Number(row.duration_ms) || 0,
+    attendees: Number(row.attendees) || 1,
+    notes: row.notes || '',
+  };
+}
+
+export async function pgListMeetings(userId) {
+  const { rows } = await getPool().query(
+    'SELECT * FROM meetings WHERE user_id = $1 ORDER BY started_at DESC LIMIT 200',
+    [userId],
+  );
+  return rows.map(mapMeeting);
+}
+
+export async function pgUpsertMeeting(userId, payload) {
+  const code = String(payload.code || '').trim().toLowerCase();
+  if (!code) throw Object.assign(new Error('Meeting code required'), { status: 400 });
+  const { rows } = await getPool().query('SELECT * FROM meetings WHERE code = $1 LIMIT 1', [code]);
+  const existing = rows[0];
+  if (existing) {
+    const endedAt = payload.endedAt ? Number(payload.endedAt) : existing.ended_at;
+    const durationMs = payload.endedAt
+      ? Math.max(0, Number(payload.endedAt) - Number(existing.started_at))
+      : existing.duration_ms;
+    await getPool().query(
+      `UPDATE meetings SET
+         attendees = GREATEST(attendees, $2),
+         notes = COALESCE(NULLIF($3, ''), notes),
+         ended_at = $4,
+         duration_ms = $5
+       WHERE code = $1`,
+      [code, Number(payload.attendees) || 1, String(payload.notes || ''), endedAt, durationMs],
+    );
+    const next = await getPool().query('SELECT * FROM meetings WHERE code = $1', [code]);
+    return mapMeeting(next.rows[0]);
+  }
+  const meeting = {
+    id: randomUUID(),
+    userId,
+    code,
+    title: String(payload.title || 'LetsConnect meeting').slice(0, 80),
+    startedAt: payload.startedAt || Date.now(),
+    endedAt: payload.endedAt || null,
+    durationMs: payload.durationMs || 0,
+    attendees: Number(payload.attendees) || 1,
+    notes: String(payload.notes || '').slice(0, 4000),
+  };
+  await getPool().query(
+    `INSERT INTO meetings (id, user_id, code, title, started_at, ended_at, duration_ms, attendees, notes)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+     ON CONFLICT (code) DO NOTHING`,
+    [
+      meeting.id,
+      meeting.userId,
+      meeting.code,
+      meeting.title,
+      meeting.startedAt,
+      meeting.endedAt,
+      meeting.durationMs,
+      meeting.attendees,
+      meeting.notes,
+    ],
+  );
+  const next = await getPool().query('SELECT * FROM meetings WHERE code = $1', [code]);
+  return mapMeeting(next.rows[0]) || meeting;
+}
+
+export async function pgDeleteMeeting(userId, meetingId) {
+  await getPool().query('DELETE FROM meetings WHERE id = $1 AND user_id = $2', [meetingId, userId]);
+}
+
+export async function pgEndMeetingsByCode(code) {
+  const normalized = String(code || '').trim().toLowerCase();
+  if (!normalized) return 0;
+  const now = Date.now();
+  const result = await getPool().query(
+    `UPDATE meetings
+     SET ended_at = $2, duration_ms = GREATEST(0, $2 - started_at)
+     WHERE code = $1 AND ended_at IS NULL`,
+    [normalized, now],
+  );
+  return result.rowCount || 0;
+}
+
+export async function pgListOpenMeetingCodes() {
+  const { rows } = await getPool().query('SELECT DISTINCT code FROM meetings WHERE ended_at IS NULL');
+  return rows.map((row) => row.code);
+}
+
+export async function pgAddWaitlistEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return { ok: false, already: false };
+  try {
+    await getPool().query('INSERT INTO waitlist (email, created_at) VALUES ($1, $2)', [normalized, Date.now()]);
+    return { ok: true, already: false };
+  } catch (err) {
+    if (String(err.code) === '23505') return { ok: true, already: true };
+    throw err;
+  }
 }

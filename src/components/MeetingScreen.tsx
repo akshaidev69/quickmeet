@@ -103,8 +103,9 @@ const shortcuts = [
   ['S', 'Share your screen, or stop sharing'],
   ['H', 'Raise or lower your hand'],
   ['C', 'Open or close chat'],
+  ['P', 'Open or close people'],
   ['W', 'Open or close the whiteboard'],
-  ['P', 'Open or close the floating window'],
+  ['Shift+P', 'Open or close the floating window'],
   ['R', 'Open reactions'],
   ['K', 'Turn captions on or off'],
   ['F', 'Full screen'],
@@ -197,6 +198,8 @@ function buildLeaveSummary(input: {
   chat: { name: string; text: string; ts: number; system?: boolean }[];
   faceCastReady: boolean;
   hadPoll: boolean;
+  endedForEveryone?: boolean;
+  guest?: boolean;
 }): MeetingSummaryData {
   const highlights = input.catchUp
     .filter((event) => event.text?.trim())
@@ -217,6 +220,8 @@ function buildLeaveSummary(input: {
     promises,
     followUpCount: promises.length,
     pollCount: input.hadPoll ? 1 : 0,
+    endedForEveryone: Boolean(input.endedForEveryone),
+    guest: Boolean(input.guest),
     recordingAvailable: input.faceCastReady,
     faceCastReady: input.faceCastReady,
     presence: participants.map((participant) => ({ name: participant })),
@@ -463,6 +468,40 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
 
   const name = safeName(loadRoomDisplayName(code, settings.name));
   const isHost = hostId === myId;
+  const seenHostRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hostId) return;
+    if (seenHostRef.current && seenHostRef.current !== hostId) {
+      const nextName = hostId === myId ? name : peers.find((peer) => peer.id === hostId)?.name || 'Someone';
+      toast(`${nextName} is now the host`);
+    }
+    seenHostRef.current = hostId;
+  }, [hostId, myId, name, peers, toast]);
+
+  useEffect(() => {
+    if (typeof BroadcastChannel === 'undefined') return;
+    const channel = new BroadcastChannel(`letsconnect-room:${code}`);
+    const tabId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let claimed = false;
+    const onMessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; tabId?: string };
+      if (data?.type === 'here' && data.tabId && data.tabId !== tabId && !claimed) {
+        claimed = true;
+        const stay = window.confirm("You're already in this meeting in another tab. Switch here?");
+        channel.postMessage({ type: stay ? 'yield' : 'keep', tabId });
+        if (!stay) finishLeaveRef.current?.();
+      }
+      if (data?.type === 'yield' && data.tabId !== tabId) {
+        finishLeaveRef.current?.();
+      }
+    };
+    channel.addEventListener('message', onMessage);
+    channel.postMessage({ type: 'here', tabId });
+    return () => {
+      channel.removeEventListener('message', onMessage);
+      channel.close();
+    };
+  }, [code]);
   const isCoHost = coHostIds.includes(myId);
   const canModerate = isHost || isCoHost;
   const canRecord = canModerate;
@@ -736,6 +775,13 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     streamRef.current?.getTracks().forEach((track) => track.stop());
     screenRef.current?.getTracks().forEach((track) => track.stop());
   }, [kickedBy]);
+
+  useEffect(() => {
+    if (boardMeta.open && !boardOpen) {
+      setBoardOpen(true);
+      toast('Host started a whiteboard', { key: 'wb-open', oncePerSession: true });
+    }
+  }, [boardMeta.open, boardOpen, toast]);
 
   useEffect(() => {
     if (canModerate && waiting.length > 0) {
@@ -1126,7 +1172,7 @@ async function toggleRecord() {
     ].sort((a, b) => b.ts - a.ts);
   }, [boardEvents, chat, hand, joinedAt, myId, name, peers, sharing]);
 
-  const finishLeave = useCallback(() => {
+  const finishLeave = useCallback((endedForEveryone = false) => {
     leaveMeetingCleanup(streamRef, screenRef);
     onLeave(
       buildLeaveSummary({
@@ -1138,6 +1184,8 @@ async function toggleRecord() {
         chat,
         faceCastReady: Boolean(recordReady?.length),
         hadPoll: Boolean(poll),
+        endedForEveryone,
+        guest: !document.cookie.includes('lc_session'),
       }),
     );
   }, [catchUpEvents, chat, code, name, onLeave, peers, poll, recordReady]);
@@ -1154,7 +1202,13 @@ async function toggleRecord() {
     toggleFullscreen,
     togglePanel,
     popOut,
-    toggleBoard: () => setBoardOpen((value) => !value),
+    toggleBoard: () => {
+      setBoardOpen((value) => {
+        const next = !value;
+        if (isHost || isCoHost) sendBoardMeta({ ...boardMeta, open: next, clock: Date.now() });
+        return next;
+      });
+    },
   });
   uiRef.current = {
     dialog,
@@ -1167,7 +1221,13 @@ async function toggleRecord() {
     toggleFullscreen,
     togglePanel,
     popOut,
-    toggleBoard: () => setBoardOpen((value) => !value),
+    toggleBoard: () => {
+      setBoardOpen((value) => {
+        const next = !value;
+        if (isHost || isCoHost) sendBoardMeta({ ...boardMeta, open: next, clock: Date.now() });
+        return next;
+      });
+    },
   };
 
   useEffect(() => {
@@ -1198,7 +1258,10 @@ async function toggleRecord() {
       else if (key === 'h') run(() => setHand((value) => !value));
       else if (key === 'c') run(() => ui.togglePanel('chat'));
       else if (key === 'w') run(() => ui.toggleBoard());
-      else if (key === 'p') run(() => ui.popOut());
+      else if (key === 'p') {
+        if (event.shiftKey) run(() => ui.popOut());
+        else run(() => ui.togglePanel('people'));
+      }
       else if (key === 'r') run(() => setPopover('react'));
       else if (key === 'b') run(() => setPopover('look'));
       else if (key === 'k') run(() => setCaptionsOn((value) => !value));
@@ -1344,16 +1407,16 @@ async function toggleRecord() {
     recorders.length === 0
       ? ''
       : recording
-        ? `FaceCast \u00b7 ${castIds.length} face${castIds.length === 1 ? '' : 's'}`
+        ? `FaceCast · ${castIds.length} face${castIds.length === 1 ? '' : 's'}`
         : `${recorders.join(', ')} recording`;
   const serverMessage =
     status === 'connected'
       ? ''
       : status === 'reconnecting'
-        ? 'Reconnecting to the meeting server\u2026'
+        ? 'Reconnecting to the meeting server…'
         : now - downSince.current > 8000
           ? 'Cannot reach the meeting server. Keep the terminal that started the app open, then refresh.'
-          : 'Connecting to the meeting server\u2026';
+          : 'Connecting to the meeting server…';
   const sharers = [
     sharing ? 'You are sharing your screen' : null,
     ...peers.filter((peer) => peer.sharing).map((peer) => `${peer.name} is sharing their screen`),
@@ -2549,7 +2612,7 @@ async function toggleRecord() {
                 onClick={() => {
                   setDialog(null);
                   endMeeting();
-                  finishLeave();
+                  finishLeave(true);
                 }}
               >
                 End meeting for everyone
@@ -2617,7 +2680,7 @@ async function toggleRecord() {
             if (recording) {
               applyCast(next, true);
               setDialog(null);
-              toast('FaceCast cut updated \u00b7 file follows this live.');
+              toast('FaceCast cut updated · file follows this live.');
               return;
             }
             startFaceCast(next);
@@ -2955,8 +3018,8 @@ function Tile({
       ? tile.connection === 'failed'
         ? 'Cannot reach them'
         : slow
-          ? 'Still connecting\u2026'
-          : 'Connecting\u2026'
+          ? 'Still connecting…'
+          : 'Connecting…'
       : '';
 
   const connectStep =
@@ -3030,7 +3093,7 @@ function Tile({
           {tile.kind === 'screen' ? 'Screen' : letters}
         </div>
       )}
-      {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen\u2026</p>}
+      {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen…</p>}
       {casted && <div className="castflag">In FaceCast</div>}
       {(tile.hand || (tile.kind === 'camera' && (!tile.micOn || !tile.showVideo))) && (
         <div className="tile-badges">
@@ -3063,9 +3126,9 @@ function Tile({
         <span>
           {tile.name}
           {tile.you && tile.kind === 'camera' ? ' (You)' : ''}
-          {tile.kind === 'camera' ? ` \u00b7 ${role}` : ''}
-          {tile.speaking ? ' \u00b7 Speaking' : ''}
-          {pinned ? ' \u00b7 Pinned' : ''}
+          {tile.kind === 'camera' && role && role !== 'You' ? ` · ${role}` : ''}
+          {tile.speaking ? ' · Speaking' : ''}
+          {pinned ? ' · Pinned' : ''}
         </span>
       </div>
       {connecting && (
@@ -3377,7 +3440,7 @@ function PeopleList({
                   row.connection !== 'connected'
                     ? row.connection === 'failed'
                       ? 'Cannot reach'
-                      : 'Connecting\u2026'
+                      : 'Connecting…'
                     : '',
                   row.micOn ? 'Mic on' : 'Mic off',
                   row.camOn ? 'Cam on' : 'Cam off',
@@ -3385,7 +3448,7 @@ function PeopleList({
                   row.sharing ? 'Sharing' : '',
                 ]
                   .filter(Boolean)
-                  .join(' \u00b7 ')}
+                  .join(' · ')}
               </span>
               <div className="person-actions">
                 <button type="button" className="pact" onClick={() => onPin(row.id)} title="Pin">
@@ -3415,7 +3478,7 @@ function PeopleList({
                       aria-expanded={overflowOpen}
                       onClick={() => onConfirm(overflowOpen ? null : `more:${row.id}`)}
                     >
-                      {'\u22ef'}
+                      {'⋯'}
                     </button>
                     {overflowOpen && (
                       <div className="person-more-menu" role="menu">
@@ -3479,7 +3542,7 @@ function CatchUpPanel({ events, onOpenChat }: { events: CatchUpEvent[]; onOpenCh
         <p>What you missed before joining.</p>
       </header>
       {events.length === 0 ? (
-        <p className="empty">Nothing yet {'\u2014'} you are caught up.</p>
+        <p className="empty">Nothing yet {'—'} you are caught up.</p>
       ) : (
         <ul className="catchup-list">
           {events.map((event) => (
@@ -3599,8 +3662,8 @@ function PollCard({
         );
       })}
       <p>
-        {Object.keys(poll.votes).length} votes{poll.closed ? ' \u00b7 Closed' : ''}
-        {mine !== undefined ? ' \u00b7 You voted' : ''}
+        {Object.keys(poll.votes).length} votes{poll.closed ? ' · Closed' : ''}
+        {mine !== undefined ? ' · You voted' : ''}
       </p>
       {canEnd && !poll.closed && (
         <button type="button" className="secondary slim" onClick={onEnd}>
@@ -3826,17 +3889,17 @@ function WaitingRoom({
 
   const hostStarting = asHost;
   const kicker = hostStarting
-    ? 'Starting\u2026'
+    ? 'Starting…'
     : gate === 'connecting'
-      ? 'Connecting\u2026'
+      ? 'Connecting…'
       : 'Knock sent';
   const title = hostStarting
     ? 'Opening your meeting'
     : gate === 'connecting'
-      ? 'Reaching the room\u2026'
+      ? 'Reaching the room…'
       : 'Waiting for the host';
   const detail = hostStarting
-    ? 'You are the host. Entering the room now \u2014 guests who use your link will knock first.'
+    ? 'You are the host. Entering the room now — guests who use your link will knock first.'
     : gate === 'connecting'
       ? 'One moment while we find the meeting.'
       : `You'll appear as ${name}. The host or a co-host will let you in.`;
@@ -4010,7 +4073,7 @@ function DetailsDialog({
         <p className="code-lg">{code}</p>
         <p>
           {isHost
-            ? 'You are the host. Anyone with the link asks to join \u00b7 admit or deny them from People.'
+            ? 'You are the host. Anyone with the link asks to join · admit or deny them from People.'
             : `Host: ${hostName}.`}
         </p>
         <p>Meeting server: {status === 'connected' ? 'Connected' : 'Not connected yet'}.</p>
@@ -4027,7 +4090,7 @@ function DetailsDialog({
                     ? 'Video connected'
                     : peer.connection === 'failed'
                       ? 'Cannot reach them. Their network may be blocking direct video.'
-                      : 'Connecting\u2026'}
+                      : 'Connecting…'}
                 </span>
               </div>
               {peer.connection !== 'connected' && (

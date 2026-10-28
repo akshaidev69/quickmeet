@@ -18,6 +18,12 @@ const admittedMemory = new Map();
 const coHosts = new Map();
 /** @type {Map<string, number>} */
 const roomLastActivity = new Map();
+/** @type {Map<string, boolean>} */
+const roomLocked = new Map();
+/** @type {Map<string, boolean>} */
+const allowRejoin = new Map();
+const SIGNAL_MAX_BYTES = 1_500_000;
+const HOST_SIGNAL_TYPES = new Set(['end-meeting', 'meeting-lock', 'kick', 'moderate', 'cast']);
 
 const STALE_OPEN_MEETING_MS = 30 * 60 * 1000;
 let staleMeetingSweepStarted = false;
@@ -128,6 +134,8 @@ export function attachSignal(httpServer) {
     rooms.delete(room);
     admittedMemory.delete(room);
     coHosts.delete(room);
+    roomLocked.delete(room);
+    allowRejoin.delete(room);
   }
 
   function cleanupEmpty(room) {
@@ -224,6 +232,7 @@ export function attachSignal(httpServer) {
 
         const memory = memoryFor(room);
         const claimHost = Boolean(msg.claimHost);
+        const previouslyAdmitted = memory.has(peerId);
         let hostId = stickyHost(room);
         const hostMember = hostId ? map.get(hostId) : null;
         const hostAlive =
@@ -236,13 +245,17 @@ export function attachSignal(httpServer) {
         if (!hostId) {
           hostId = peerId;
           hosts.set(room, peerId);
-        } else if (!hostAlive && (claimHost || peerId === hostId || memory.has(peerId))) {
-          // Sticky host offline — creator / returning host takes the seat.
+        } else if (!hostAlive && (claimHost || peerId === hostId)) {
           hostId = peerId;
           hosts.set(room, peerId);
         }
 
-        const admitted = peerId === hostId || memory.has(peerId);
+        if (roomLocked.get(room) && peerId !== hostId && !previouslyAdmitted) {
+          ws.send(JSON.stringify({ kind: 'gate', state: 'denied', hostId, reason: 'locked' }));
+          return;
+        }
+
+        const admitted = peerId === hostId || (previouslyAdmitted && allowRejoin.get(room) === true);
         const member = { ws, name, admitted };
         map.set(peerId, member);
         if (admitted) memory.add(peerId);
@@ -356,8 +369,39 @@ export function attachSignal(httpServer) {
         return;
       }
 
+      if (msg.kind === 'room-setting') {
+        if (!self.admitted || !canModerate(room, peerId)) return;
+        if (typeof msg.allowRejoin === 'boolean') allowRejoin.set(room, msg.allowRejoin);
+        if (typeof msg.locked === 'boolean') roomLocked.set(room, msg.locked);
+        const notice = JSON.stringify({
+          kind: 'signal',
+          from: peerId,
+          payload: { type: 'meeting-lock', from: peerId, locked: Boolean(roomLocked.get(room)) },
+        });
+        for (const member of map.values()) {
+          if (member.admitted && member.ws.readyState === 1) member.ws.send(notice);
+        }
+        return;
+      }
+
       if (msg.kind !== 'signal' || !self.admitted) return;
+      const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+      const type = String(payload.type || '');
+      if (HOST_SIGNAL_TYPES.has(type) && !canModerate(room, peerId)) return;
+      if (type === 'meeting-lock') {
+        roomLocked.set(room, Boolean(payload.locked));
+      }
+      if (type === 'end-meeting') {
+        if (stickyHost(room) !== peerId) return;
+        const notice = JSON.stringify(msg);
+        for (const [id, member] of map) {
+          if (id !== peerId && member.ws.readyState === 1) member.ws.send(notice);
+        }
+        wipeRoom(room);
+        return;
+      }
       const raw = JSON.stringify(msg);
+      if (raw.length > SIGNAL_MAX_BYTES) return;
       for (const [id, member] of map) {
         if (id !== peerId && member.admitted && member.ws.readyState === 1) member.ws.send(raw);
       }

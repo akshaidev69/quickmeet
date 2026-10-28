@@ -99,30 +99,18 @@ type RoomApi = {
   sendBoardSync: (to?: string) => void;
 };
 
-function buildIceServers(): RTCIceServer[] {
-  const servers: RTCIceServer[] = [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
-  ];
-  const turnUrls = (import.meta.env.VITE_TURN_URLS || '')
-    .split(',')
-    .map((item: string) => item.trim())
-    .filter(Boolean);
-  const turnUser = String(import.meta.env.VITE_TURN_USERNAME || '');
-  const turnPass = String(import.meta.env.VITE_TURN_CREDENTIAL || '');
-  if (turnUrls.length && turnUser && turnPass) {
-    servers.push({ urls: turnUrls, username: turnUser, credential: turnPass });
-  } else {
-    // Public openrelay fallback so guests behind strict NAT / no-camera peers can still connect.
-    servers.push({
-      urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443'],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    });
+let iceServers: RTCIceServer[] = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+
+async function loadIceServers() {
+  try {
+    const data = await fetch('/api/ice', { credentials: 'include' }).then((res) => res.json());
+    if (Array.isArray(data.iceServers) && data.iceServers.length) iceServers = data.iceServers;
+  } catch {
+    /* keep STUN */
   }
-  return servers;
 }
 
-const iceServers = buildIceServers();
+void loadIceServers();
 
 function tuneCameraTrack(track: MediaStreamTrack | null) {
   if (!track) return;
@@ -443,17 +431,22 @@ export function useRoom(options: Options) {
       pc.oniceconnectionstatechange = () => {
         if (closed) return;
         const ice = pc.iceConnectionState;
-        if (ice === 'failed' || ice === 'closed') {
+        if (ice === 'closed') {
           dropPeer();
           return;
         }
-        if (ice === 'disconnected') {
+        if (ice === 'disconnected' || ice === 'failed') {
+          try {
+            void pc.restartIce();
+          } catch {
+            /* older browsers */
+          }
           window.setTimeout(() => {
             if (closed) return;
-            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'closed') {
+            if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
               dropPeer();
             }
-          }, 4000);
+          }, 15_000);
         }
       };
       pc.ontrack = (event) => {
@@ -1011,7 +1004,9 @@ export function useRoom(options: Options) {
     const onPageHide = () => sendLeave();
     window.addEventListener('beforeunload', onPageHide);
 
-    connect();
+    void loadIceServers().then(() => {
+      if (!closed) connect();
+    });
     return () => {
       window.removeEventListener('beforeunload', onPageHide);
       sendLeave();

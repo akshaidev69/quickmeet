@@ -70,6 +70,18 @@ export async function firebaseSignUp(email, password) {
   throw Object.assign(new Error(data.error?.message || 'Could not create account.'), { status: 400 });
 }
 
+export async function firebaseSendPasswordReset(email) {
+  const { ok, data } = await call('accounts:sendOobCode', {
+    requestType: 'PASSWORD_RESET',
+    email,
+  });
+  if (ok) return true;
+  const code = String(data.error?.message || '');
+  if (code.includes('EMAIL_NOT_FOUND')) return true;
+  if (disabled(code) || code.includes('TIMEOUT')) return false;
+  throw Object.assign(new Error('Could not send a reset email. Try again.'), { status: 400 });
+}
+
 export async function firebaseSignIn(email, password) {
   const { ok, data } = await call('accounts:signInWithPassword', {
     email,

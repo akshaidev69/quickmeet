@@ -77,7 +77,7 @@ export type Signal =
 
 export type ThemeMode = 'light' | 'dark';
 
-export type BackgroundId = 'none' | 'blur' | 'office' | 'studio' | 'home' | 'custom';
+export type BackgroundId = 'none' | 'blur' | 'blurStrong' | 'office' | 'studio' | 'home' | 'custom';
 
 export type Settings = {
   name: string;

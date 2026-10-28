@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
-import { fetchMeetings, removeMeeting, type SavedMeeting } from '../lib/api';
+import { fetchMeetings, removeMeeting, updateProfile, type SavedMeeting } from '../lib/api';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode, safeName, uid } from '../lib/code';
 import { formatDurationLabel, formatMeetingDayKey, formatMeetingWhen } from '../lib/formatTime';
 import { isNativeApp } from '../lib/native';
@@ -97,7 +97,7 @@ export function HomeScreen({
   inCallCode,
   onReturnToCall,
 }: Props) {
-  const { user } = useAuth();
+  const { user, setUser } = useAuth();
   const native = isNativeApp();
   const [code, setCode] = useState('');
   const [joinError, setJoinError] = useState('');
@@ -160,10 +160,16 @@ export function HomeScreen({
     });
   }, [cloud, schedule, today]);
 
-  const meetingsToday = useMemo(
-    () => schedule.filter((item) => item.when && formatMeetingDayKey(item.when) === todayKey).length,
-    [schedule, todayKey],
-  );
+  const meetingsToday = useMemo(() => {
+    const codes = new Set<string>();
+    for (const item of schedule) {
+      if (item.when && formatMeetingDayKey(item.when) === todayKey) codes.add(item.code);
+    }
+    for (const item of cloud) {
+      if (formatMeetingDayKey(item.startedAt) === todayKey) codes.add(item.code);
+    }
+    return codes.size;
+  }, [cloud, schedule, todayKey]);
 
   const daySchedule = useMemo(
     () =>
@@ -455,10 +461,15 @@ export function HomeScreen({
         <label className="dash-field">
           <span>Display name</span>
           <input
-            value={settings.name}
+            value={settings.name || user?.name || ''}
             maxLength={40}
             placeholder="How people see you"
             onChange={(event) => onSettings({ ...settings, name: event.target.value })}
+            onBlur={() => {
+              const next = settings.name.trim();
+              if (!next || next === user?.name) return;
+              void updateProfile({ name: next }).then((data) => setUser(data.user)).catch(() => undefined);
+            }}
           />
         </label>
         <button
@@ -561,6 +572,7 @@ export function HomeScreen({
           >
             Product
           </button>
+          <div className="dash-avatar-wrap">
           <button
             ref={avatarRef}
             type="button"
@@ -576,10 +588,10 @@ export function HomeScreen({
               <span>{(user?.name || settings.name || 'A').slice(0, 2).toUpperCase()}</span>
             )}
           </button>
+          {profileMenu}
+          </div>
         </div>
       </header>
-
-      {profileMenu}
 
       <div className="dash-layout">
         <div className="dash-col-main">
@@ -602,7 +614,7 @@ export function HomeScreen({
               </span>
               <span className="dash-new-hero-copy">
                 <h2 id="dash-new-title">New meeting</h2>
-                <p>Instant link {'\u00b7'} free, no time limit</p>
+                <p>Instant link {'·'} free, no time limit</p>
               </span>
               <span className="dash-new-hero-chevron" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -723,7 +735,7 @@ export function HomeScreen({
 
           <section ref={upcomingRef} className="dash-panel" aria-labelledby="dash-upcoming-title">
             <div className="dash-panel-head">
-              <h2 id="dash-upcoming-title">Up next {'\u00b7'} {selectedDayLabel}</h2>
+              <h2 id="dash-upcoming-title">Up next {'·'} {selectedDayLabel}</h2>
             </div>
             {daySchedule.length === 0 && dayCloud.length === 0 ? (
               <div className="dash-empty">
@@ -786,7 +798,7 @@ export function HomeScreen({
 
           <section ref={recordingsRef} className="dash-panel dash-panel-muted dash-recordings-mobile" aria-labelledby="dash-rec-title">
             <h2 id="dash-rec-title">Recordings</h2>
-            <p className="dash-empty-inline">Coming soon {'\u2014'} your saved sessions will appear here.</p>
+            <p className="dash-empty-inline">Coming soon {'—'} your saved sessions will appear here.</p>
           </section>
 
           <section ref={recentRef} className="dash-panel dash-mobile-recent" aria-labelledby="dash-recent-mobile-title">
@@ -924,7 +936,7 @@ export function HomeScreen({
             aria-labelledby="dash-rec-desktop-title"
           >
             <h2 id="dash-rec-desktop-title">Recordings</h2>
-            <p className="dash-empty-inline">Coming soon {'\u2014'} your saved sessions will appear here.</p>
+            <p className="dash-empty-inline">Coming soon {'—'} your saved sessions will appear here.</p>
           </section>
 
           <p className="dash-fine">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>

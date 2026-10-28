@@ -6,9 +6,11 @@ export function uid() {
 }
 
 export function meetingCode() {
-  const pick = (n: number) =>
-    Array.from({ length: n }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
-  return `${pick(3)}-${pick(4)}-${pick(3)}`;
+  const bytes = new Uint8Array(10);
+  crypto.getRandomValues(bytes);
+  const pick = (offset: number, n: number) =>
+    Array.from({ length: n }, (_, i) => alphabet[bytes[offset + i] % alphabet.length]).join('');
+  return `${pick(0, 3)}-${pick(3, 4)}-${pick(7, 3)}`;
 }
 
 export function compactCode(raw: string) {

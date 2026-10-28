@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LookChoices, ThemeButton } from './LookControls';
+import { BUILD_VERSION } from '../lib/build';
 import { loadFramePrefs, saveFramePrefs } from '../lib/framePrefs';
 import { deviceLabel, listDevices, type DeviceLists } from '../lib/media';
 import type { Settings } from '../types';
@@ -136,6 +137,7 @@ export function SettingsDialog({ settings, onChange, onClose, onRetry }: Props) 
             Retry camera and microphone
           </button>
         )}
+        <p className="hint">About · LetsConnect {BUILD_VERSION}</p>
       </div>
     </div>
   );

@@ -21,11 +21,12 @@ type Props = {
 };
 
 const BG_CHIPS: { id: BackgroundId; label: string; swatch?: BackgroundId }[] = [
-  { id: 'none', label: 'None' },
-  { id: 'blur', label: 'Blur' },
-  { id: 'office', label: 'Mint', swatch: 'office' },
-  { id: 'studio', label: 'Peach', swatch: 'studio' },
-  { id: 'home', label: 'Periwinkle', swatch: 'home' },
+  { id: 'none', label: 'Off' },
+  { id: 'blur', label: 'Light blur' },
+  { id: 'blurStrong', label: 'Strong blur' },
+  { id: 'office', label: 'Office', swatch: 'office' },
+  { id: 'studio', label: 'Room', swatch: 'studio' },
+  { id: 'home', label: 'Home', swatch: 'home' },
 ];
 
 function backgroundLabel(id: BackgroundId) {
@@ -130,7 +131,7 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
       const w = s.width;
       const h = s.height;
       const fps = s.frameRate ? `${Math.round(s.frameRate)} fps` : '';
-      const res = w && h ? `${w}\u00d7${h}` : '';
+      const res = w && h ? `${w}×${h}` : '';
       const mirror = settings.mirror ? 'Mirror on' : 'Mirror off';
       setCamMeta([res, fps, mirror].filter(Boolean).join(' · '));
     };
@@ -384,7 +385,7 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
                 ))}
               </select>
               <button type="button" className="prejoin-test-sound" disabled={soundPlaying} onClick={onTestSound}>
-                {soundPlaying ? 'Playing\u2026' : 'Play test sound'}
+                {soundPlaying ? 'Playing…' : 'Play test sound'}
               </button>
             </article>
 

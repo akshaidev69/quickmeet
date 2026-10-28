@@ -52,7 +52,20 @@ function applyEnabled(stream: MediaStream, opts: AcquireOptions) {
 }
 
 async function tryGet(audio: boolean | MediaTrackConstraints, video: boolean | MediaTrackConstraints) {
-  return navigator.mediaDevices.getUserMedia({ audio, video });
+  let timer = 0;
+  try {
+    return await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio, video }),
+      new Promise<MediaStream>((_, reject) => {
+        timer = window.setTimeout(
+          () => reject(Object.assign(new Error('Camera timed out. You can join without camera.'), { name: 'TimeoutError' })),
+          8000,
+        );
+      }),
+    ]);
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 export async function acquireMedia(opts: AcquireOptions): Promise<AcquireResult> {

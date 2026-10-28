@@ -18,16 +18,21 @@ import {
 } from './db.mjs';
 import {
   ensurePg,
+  pgAddWaitlistEmail,
   pgCreateUser,
+  pgDeleteMeeting,
   pgFindUserByEmail,
   pgFindUserByGoogleId,
   pgFindUserById,
   pgLinkGoogle,
+  pgListMeetings,
   pgUpdateUserProfile,
+  pgUpsertMeeting,
   pgUpsertUserProfile,
 } from './pgStore.mjs';
 import { hashPassword, verifyPassword } from './passwords.mjs';
-import { firebaseSignIn, firebaseSignUp } from './firebasePasswords.mjs';
+import { firebaseSendPasswordReset, firebaseSignIn, firebaseSignUp } from './firebasePasswords.mjs';
+import { iceServersFromEnv, rateLimit, readBodyCapped, securityHeaders, BUILD_VERSION } from './security.mjs';
 import {
   COOKIE,
   clearSessionCookie,
@@ -183,27 +188,15 @@ function parseCookies(header = '') {
 }
 
 function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      const raw = Buffer.concat(chunks).toString('utf8');
-      if (!raw) return resolve({});
-      try {
-        resolve(JSON.parse(raw));
-      } catch {
-        reject(Object.assign(new Error('Invalid JSON body'), { status: 400 }));
-      }
-    });
-    req.on('error', reject);
-  });
+  return readBodyCapped(req);
 }
 
-function sendJson(res, status, data, extraHeaders = {}) {
+function sendJson(res, status, data, extraHeaders = {}, req) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
+    ...securityHeaders(req || { headers: {} }),
     ...extraHeaders,
   });
   res.end(body);
@@ -354,12 +347,30 @@ export async function handleAuthApi(req, res) {
     !url.pathname.startsWith('/api/auth') &&
     !url.pathname.startsWith('/api/meetings') &&
     url.pathname !== '/api/config' &&
-    url.pathname !== '/api/waitlist'
+    url.pathname !== '/api/waitlist' &&
+    url.pathname !== '/api/ice' &&
+    url.pathname !== '/api/version'
   ) {
     return false;
   }
 
   try {
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, securityHeaders(req, { 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'content-type' }));
+      res.end();
+      return true;
+    }
+
+    if (url.pathname === '/api/version' && req.method === 'GET') {
+      sendJson(res, 200, { app: 'LetsConnect', version: BUILD_VERSION }, {}, req);
+      return true;
+    }
+
+    if (url.pathname === '/api/ice' && req.method === 'GET') {
+      sendJson(res, 200, { iceServers: iceServersFromEnv() }, {}, req);
+      return true;
+    }
+
     if (url.pathname === '/api/waitlist' && req.method === 'POST') {
       const body = await readBody(req);
       const normalized = normalizeEmail(body.email);
@@ -367,8 +378,20 @@ export async function handleAuthApi(req, res) {
         sendJson(res, 400, { error: 'Enter a valid email address.' });
         return true;
       }
-      const result = addWaitlistEmail(normalized);
-      sendJson(res, 200, { ok: true, ...(result.already ? { already: true } : {}) });
+      const limited = rateLimit(req, 'join');
+      if (!limited.ok) {
+        sendJson(res, 429, { error: 'Too many tries. Wait a minute and retry.' }, { 'Retry-After': String(limited.retryAfter) }, req);
+        return true;
+      }
+      let result = addWaitlistEmail(normalized);
+      if (await usePg()) {
+        try {
+          result = await pgAddWaitlistEmail(normalized);
+        } catch {
+          /* JSON already stored */
+        }
+      }
+      sendJson(res, 200, { ok: true, ...(result.already ? { already: true } : {}) }, {}, req);
       return true;
     }
 
@@ -381,7 +404,8 @@ export async function handleAuthApi(req, res) {
           free: true,
           hook: 'Free while we grow — Pro & Teams coming soon.',
         },
-      });
+        version: BUILD_VERSION,
+      }, {}, req);
       return true;
     }
 
@@ -439,7 +463,34 @@ export async function handleAuthApi(req, res) {
       return true;
     }
 
+    if (url.pathname === '/api/auth/forgot' && req.method === 'POST') {
+      const limited = rateLimit(req, 'auth');
+      if (!limited.ok) {
+        sendJson(res, 429, { error: 'Too many tries. Wait a minute and retry.' }, { 'Retry-After': String(limited.retryAfter) }, req);
+        return true;
+      }
+      const body = await readBody(req);
+      const email = normalizeEmail(body.email);
+      if (!EMAIL_RE.test(email)) {
+        sendJson(res, 400, { error: 'Enter a valid email address.', field: 'email' }, {}, req);
+        return true;
+      }
+      try {
+        await firebaseSendPasswordReset(email);
+      } catch (err) {
+        sendJson(res, err.status || 400, { error: err.message || 'Could not send a reset email.' }, {}, req);
+        return true;
+      }
+      sendJson(res, 200, { ok: true }, {}, req);
+      return true;
+    }
+
     if (url.pathname === '/api/auth/register' && req.method === 'POST') {
+      const limited = rateLimit(req, 'auth');
+      if (!limited.ok) {
+        sendJson(res, 429, { error: 'Too many tries. Wait a minute and retry.' }, { 'Retry-After': String(limited.retryAfter) }, req);
+        return true;
+      }
       const body = await readBody(req);
       const checked = validateAuthFields({
         email: body.email,
@@ -485,6 +536,11 @@ export async function handleAuthApi(req, res) {
     }
 
     if (url.pathname === '/api/auth/login' && req.method === 'POST') {
+      const limited = rateLimit(req, 'auth');
+      if (!limited.ok) {
+        sendJson(res, 429, { error: 'Too many tries. Wait a minute and retry.' }, { 'Retry-After': String(limited.retryAfter) }, req);
+        return true;
+      }
       const body = await readBody(req);
       const checked = validateAuthFields({
         email: body.email,
@@ -499,9 +555,9 @@ export async function handleAuthApi(req, res) {
       let row = await dbFindByEmail(checked.email);
       let ok = row?.passwordHash ? await verifyPassword(checked.password, row.passwordHash) : false;
 
-      // Durable Firebase check when local hash is missing (Render disk wipe). Skip if
-      // we already rejected a local password — that keeps wrong-password errors fast.
-      if (!ok && !row?.passwordHash) {
+      // Firebase is the durable password store. Always fall back when local JSON
+      // hashes are missing, stale, or wiped on Render's ephemeral disk.
+      if (!ok) {
         const fb = await firebaseSignIn(checked.email, checked.password);
         if (fb) {
           const passwordHash = await hashPassword(checked.password);
@@ -640,7 +696,8 @@ export async function handleAuthApi(req, res) {
         sendJson(res, 401, { error: 'Sign in required.' });
         return true;
       }
-      sendJson(res, 200, { meetings: listMeetings(session.user.id) });
+      const meetings = (await usePg()) ? await pgListMeetings(session.user.id) : listMeetings(session.user.id);
+      sendJson(res, 200, { meetings }, {}, req);
       return true;
     }
 
@@ -651,8 +708,10 @@ export async function handleAuthApi(req, res) {
         return true;
       }
       const body = await readBody(req);
-      const meeting = upsertMeeting(session.user.id, body);
-      sendJson(res, 200, { meeting });
+      const meeting = (await usePg())
+        ? await pgUpsertMeeting(session.user.id, body)
+        : upsertMeeting(session.user.id, body);
+      sendJson(res, 200, { meeting }, {}, req);
       return true;
     }
 
@@ -663,8 +722,9 @@ export async function handleAuthApi(req, res) {
         return true;
       }
       const id = url.pathname.split('/').pop();
-      deleteMeeting(session.user.id, id);
-      sendJson(res, 200, { ok: true });
+      if (await usePg()) await pgDeleteMeeting(session.user.id, id);
+      else deleteMeeting(session.user.id, id);
+      sendJson(res, 200, { ok: true }, {}, req);
       return true;
     }
 

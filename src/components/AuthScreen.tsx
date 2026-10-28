@@ -4,7 +4,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 import { App as CapApp } from '@capacitor/app';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
-import { claimFirebaseHandoff, fetchConfig, loginWithFirebaseToken } from '../lib/api';
+import { claimFirebaseHandoff, fetchConfig, loginWithFirebaseToken, requestPasswordReset } from '../lib/api';
+import { loadSettings, saveSettings } from '../lib/storage';
+import { ThemeButton } from './LookControls';
 import { exchangeGoogleIdToken, firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
 import {
   closeExternalBrowser,
@@ -33,6 +35,9 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [formBusy, setFormBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [theme, setTheme] = useState(loadSettings().theme);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [googleOn, setGoogleOn] = useState(firebaseConfigured());
   const pendingNative = useRef(false);
@@ -170,13 +175,40 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
 
   const native = isNativeApp();
 
+  async function onForgot() {
+    setError('');
+    if (!EMAIL_RE.test(email.trim())) {
+      setEmailError('Enter a valid email address');
+      return;
+    }
+    setResetBusy(true);
+    try {
+      await requestPasswordReset(email.trim());
+      setResetSent(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send a reset email');
+    } finally {
+      setResetBusy(false);
+    }
+  }
+
   return (
     <main className={`auth-page${native ? ' auth-native' : ''}`}>
-      {!native && (
-        <button type="button" className="auth-back textbtn" onClick={onBack}>
-          ← LetsConnect home
-        </button>
-      )}
+      <div className="auth-toolbar">
+        {!native && (
+          <button type="button" className="auth-back textbtn" onClick={onBack}>
+            ← LetsConnect home
+          </button>
+        )}
+        <ThemeButton
+          theme={theme}
+          onChange={(next) => {
+            setTheme(next);
+            saveSettings({ ...loadSettings(), theme: next });
+            document.documentElement.dataset.theme = next;
+          }}
+        />
+      </div>
       <section className="auth-card">
         <div className="auth-brand">
           <Logo size={32} />
@@ -251,7 +283,14 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
             {passwordError && <p className="field-error">{passwordError}</p>}
           </label>
           {error && <p className="warn-text">{error}</p>}
-          <button type="submit" className="primary xl ask-join auth-submit" disabled={formBusy || googleBusy}>
+          {mode === 'login' && (
+            <p className="auth-switch">
+              <button type="button" className="textbtn" disabled={resetBusy || formBusy} onClick={() => void onForgot()}>
+                {resetBusy ? 'Sending…' : resetSent ? 'Reset email sent' : 'Forgot password'}
+              </button>
+            </p>
+          )}
+          <button type="submit" className="primary xl ask-join auth-submit" disabled={formBusy || googleBusy || resetBusy}>
             {formBusy ? (
               <>
                 <span className="auth-spinner" aria-hidden="true" />

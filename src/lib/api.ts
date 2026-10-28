@@ -21,20 +21,10 @@ export type SavedMeeting = {
   notes: string;
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json; charset=utf-8', ...(init?.headers || {}) },
-    ...init,
-  });
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string; field?: string };
-  if (!response.ok) {
-    const err = new Error(data.error || `Request failed (${response.status})`) as Error & { field?: string; status?: number };
-    err.field = data.field;
-    err.status = response.status;
-    throw err;
-  }
-  return data;
+import { fetchJson } from './http';
+
+async function request<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  return fetchJson<T>(path, init);
 }
 
 export function fetchConfig() {
@@ -106,4 +96,19 @@ export function joinWaitlist(email: string) {
     method: 'POST',
     body: JSON.stringify({ email }),
   });
+}
+
+export function requestPasswordReset(email: string) {
+  return request<{ ok: boolean }>('/api/auth/forgot', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
+export function fetchIceServers() {
+  return request<{ iceServers: RTCIceServer[] }>('/api/ice');
+}
+
+export function fetchVersion() {
+  return request<{ app: string; version: string }>('/api/version');
 }

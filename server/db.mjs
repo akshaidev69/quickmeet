@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { pgEnabled, pgEndMeetingsByCode } from './pgStore.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.LETSCONNECT_DATA || path.join(__dirname, '..', 'data');
@@ -198,17 +199,18 @@ export function listMeetings(userId) {
 export function upsertMeeting(userId, payload) {
   const code = String(payload.code || '').trim().toLowerCase();
   if (!code) throw Object.assign(new Error('Meeting code required'), { status: 400 });
-  const existing = cache.meetings.find((meeting) => meeting.userId === userId && meeting.code === code && !meeting.endedAt);
+  const existing = cache.meetings.find((meeting) => meeting.code === code);
   if (existing) {
     mutate((store) => {
       const meeting = store.meetings.find((item) => item.id === existing.id);
       if (!meeting) return store;
-      if (payload.title) meeting.title = String(payload.title).slice(0, 80);
-      if (payload.attendees != null) meeting.attendees = Number(payload.attendees) || meeting.attendees;
-      if (payload.notes != null) meeting.notes = String(payload.notes).slice(0, 4000);
+      if (payload.attendees != null) meeting.attendees = Math.max(meeting.attendees, Number(payload.attendees) || 1);
+      if (payload.notes != null && payload.notes) meeting.notes = String(payload.notes).slice(0, 4000);
       if (payload.endedAt) {
         meeting.endedAt = payload.endedAt;
         meeting.durationMs = Math.max(0, meeting.endedAt - meeting.startedAt);
+      } else if (payload.reopen) {
+        meeting.endedAt = null;
       }
       return store;
     });
@@ -227,7 +229,7 @@ export function upsertMeeting(userId, payload) {
   };
   mutate((store) => {
     store.meetings.unshift(meeting);
-    store.meetings = store.meetings.slice(0, 200);
+    store.meetings = store.meetings.slice(0, 400);
     return store;
   });
   return meeting;
@@ -284,6 +286,7 @@ export function endOpenMeetingsByCode(code) {
     }
     return store;
   });
+  if (pgEnabled()) void pgEndMeetingsByCode(normalized);
   return count;
 }
 

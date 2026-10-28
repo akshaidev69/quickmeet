@@ -1,4 +1,5 @@
 import { getCustomBackgroundImage, loadCustomBackground } from './customBg';
+import { LookComposer } from './lookCompose';
 import type { BackgroundId } from '../types';
 
 export type LookStatus = 'real' | 'loading' | 'on' | 'fallback';
@@ -12,6 +13,7 @@ type Mask = {
 
 type SegmentResult = {
   categoryMask?: Mask;
+  confidenceMasks?: Mask[];
   close?: () => void;
 };
 
@@ -40,7 +42,8 @@ function loadSegmenter(): Promise<Segmenter | null> {
       const options = {
         baseOptions: { modelAssetPath: model },
         runningMode: 'VIDEO',
-        outputCategoryMask: true,
+        outputConfidenceMasks: true,
+        outputCategoryMask: false,
       };
       try {
         return await mod.ImageSegmenter.createFromOptions(fileset, {
@@ -77,7 +80,7 @@ function drawCoverImage(ctx: CanvasRenderingContext2D, image: CanvasImageSource,
   ctx.drawImage(image, (w - dw) / 2, (h - dh) / 2, dw, dh);
 }
 
-function paintScene(ctx: CanvasRenderingContext2D, kind: Exclude<BackgroundId, 'none' | 'blur' | 'custom'>, w: number, h: number) {
+function paintScene(ctx: CanvasRenderingContext2D, kind: Exclude<BackgroundId, 'none' | 'blur' | 'blurStrong' | 'custom'>, w: number, h: number) {
   const wall = ctx.createLinearGradient(0, 0, 0, h);
   if (kind === 'office') {
     wall.addColorStop(0, '#f4efe6');
@@ -196,8 +199,8 @@ export class LookEngine {
   readonly canvas: HTMLCanvasElement;
   readonly track: MediaStreamTrack;
   private ctx: CanvasRenderingContext2D;
-  private person = document.createElement('canvas');
-  private personCtx: CanvasRenderingContext2D;
+  private composer = new LookComposer();
+  private sceneCanvas = document.createElement('canvas');
   private raf = 0;
   private stopped = false;
   private segmenter: Segmenter | null = null;
@@ -210,6 +213,7 @@ export class LookEngine {
   private lastSeg = 0;
   private lastPaint = 0;
   private status: LookStatus = 'loading';
+  private slow = false;
 
   constructor(
     private video: HTMLVideoElement,
@@ -217,13 +221,11 @@ export class LookEngine {
     private onStatus: (status: LookStatus) => void,
   ) {
     this.canvas = document.createElement('canvas');
-    this.canvas.width = 960;
-    this.canvas.height = 540;
+    this.canvas.width = 640;
+    this.canvas.height = 360;
     const ctx = this.canvas.getContext('2d', { alpha: false });
-    const personCtx = this.person.getContext('2d', { willReadFrequently: true });
-    if (!ctx || !personCtx) throw new Error('Canvas is not available');
+    if (!ctx) throw new Error('Canvas is not available');
     this.ctx = ctx;
-    this.personCtx = personCtx;
     const stream = this.canvas.captureStream(30);
     const track = stream.getVideoTracks()[0];
     if (!track) throw new Error('Canvas stream has no video');
@@ -271,59 +273,99 @@ export class LookEngine {
     this.raf = requestAnimationFrame(this.loop);
   };
 
+  private syncSize() {
+    const settings = this.video.srcObject instanceof MediaStream
+      ? this.video.srcObject.getVideoTracks()[0]?.getSettings()
+      : null;
+    const w = Math.max(2, Math.round(settings?.width || this.video.videoWidth || 640));
+    const h = Math.max(2, Math.round(settings?.height || this.video.videoHeight || 360));
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+      this.composer.resize(w, h);
+    }
+  }
+
   private paint() {
     const effect = this.getEffect();
     const video = this.video;
     const ctx = this.ctx;
+    if (effect === 'none' || video.readyState < 2 || !video.videoWidth) return;
+    this.syncSize();
     const w = this.canvas.width;
     const h = this.canvas.height;
-    if (effect === 'none' || video.readyState < 2 || !video.videoWidth) {
-      ctx.fillStyle = '#1c2126';
-      ctx.fillRect(0, 0, w, h);
-      return;
-    }
-    if (effect === 'blur') {
-      ctx.save();
-      ctx.filter = 'blur(26px)';
-      drawCover(ctx, video, w, h);
-      ctx.restore();
-      ctx.fillStyle = 'rgba(12, 16, 20, .18)';
-      ctx.fillRect(0, 0, w, h);
-    } else if (effect === 'custom') {
-      paintCustom(ctx, w, h);
-    } else {
-      paintScene(ctx, effect, w, h);
-    }
-    if (this.failed) {
-      drawContain(ctx, video, video.videoWidth, video.videoHeight, w, h);
-      this.setStatus('fallback');
+    if (this.failed || !this.composer.available) {
+      this.paintFallback(effect, w, h);
+      this.setStatus(this.failed ? 'fallback' : 'loading');
       return;
     }
     if (!this.segmenter) {
-      drawContain(ctx, video, video.videoWidth, video.videoHeight, w, h);
+      this.paintFallback(effect, w, h);
       this.setStatus('loading');
       return;
     }
     void this.segment();
     if (!this.mask) {
-      drawContain(ctx, video, video.videoWidth, video.videoHeight, w, h);
+      this.paintFallback(effect, w, h);
       this.setStatus('loading');
       return;
     }
-    this.cutout();
-    drawContain(ctx, this.person, this.person.width, this.person.height, w, h);
+    const kind = effect === 'blur' || effect === 'blurStrong' ? effect : 'image';
+    const bg = this.sceneCanvas;
+    if (bg.width !== w || bg.height !== h) {
+      bg.width = w;
+      bg.height = h;
+    }
+    const bgCtx = bg.getContext('2d');
+    if (bgCtx) {
+      if (effect === 'custom') paintCustom(bgCtx, w, h);
+      else if (effect !== 'blur' && effect !== 'blurStrong') paintScene(bgCtx, effect, w, h);
+    }
+    const mixed = this.composer.mix(
+      video,
+      this.mask,
+      this.maskW,
+      this.maskH,
+      this.personHigh,
+      kind,
+      effect === 'blur' || effect === 'blurStrong' ? null : bg,
+    );
+    if (!mixed) {
+      this.paintFallback(effect, w, h);
+      this.setStatus('fallback');
+      return;
+    }
+    ctx.drawImage(this.composer.canvas, 0, 0, w, h);
     this.setStatus('on');
+  }
+
+  private paintFallback(effect: BackgroundId, w: number, h: number) {
+    const ctx = this.ctx;
+    const video = this.video;
+    if (effect === 'blur' || effect === 'blurStrong') {
+      ctx.save();
+      ctx.filter = effect === 'blurStrong' ? 'blur(32px)' : 'blur(16px)';
+      drawCover(ctx, video, w, h);
+      ctx.restore();
+    } else if (effect === 'custom') {
+      paintCustom(ctx, w, h);
+    } else if (effect !== 'none') {
+      paintScene(ctx, effect, w, h);
+    }
+    drawContain(ctx, video, video.videoWidth, video.videoHeight, w, h);
   }
 
   private async segment() {
     if (this.busy || this.failed || !this.segmenter) return;
     const now = performance.now();
-    if (now - this.lastSeg < 140) return;
+    const gap = this.slow ? 66 : 33;
+    if (now - this.lastSeg < gap) return;
     this.lastSeg = now;
     this.busy = true;
     try {
+      const started = performance.now();
       const result = await this.segmenter.segmentForVideo(this.video, now);
-      const mask = result.categoryMask;
+      const mask = result.confidenceMasks?.[0] || result.categoryMask;
       if (mask) {
         const bytes = mask.getAsUint8Array();
         this.mask = new Uint8Array(bytes);
@@ -333,41 +375,13 @@ export class LookEngine {
         mask.close?.();
       }
       result.close?.();
+      this.slow = performance.now() - started > 50;
     } catch {
       this.failed = true;
       this.setStatus('fallback');
     } finally {
       this.busy = false;
     }
-  }
-
-  private cutout() {
-    const video = this.video;
-    const maxW = 560;
-    const scale = Math.min(1, maxW / video.videoWidth);
-    const tw = Math.max(2, Math.round(video.videoWidth * scale));
-    const th = Math.max(2, Math.round(video.videoHeight * scale));
-    if (this.person.width !== tw || this.person.height !== th) {
-      this.person.width = tw;
-      this.person.height = th;
-    }
-    const pctx = this.personCtx;
-    pctx.clearRect(0, 0, tw, th);
-    pctx.drawImage(video, 0, 0, tw, th);
-    const mask = this.mask;
-    if (!mask || !this.maskW || !this.maskH) return;
-    const image = pctx.getImageData(0, 0, tw, th);
-    const data = image.data;
-    for (let y = 0; y < th; y += 1) {
-      const my = Math.min(this.maskH - 1, (y * this.maskH / th) | 0);
-      for (let x = 0; x < tw; x += 1) {
-        const mx = Math.min(this.maskW - 1, (x * this.maskW / tw) | 0);
-        const value = mask[my * this.maskW + mx];
-        const person = this.personHigh ? value > 0 : value === 0;
-        if (!person) data[(y * tw + x) * 4 + 3] = 0;
-      }
-    }
-    pctx.putImageData(image, 0, 0);
   }
 }
 

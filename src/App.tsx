@@ -4,6 +4,7 @@ import { GoogleAuthBridge } from './components/GoogleAuthBridge';
 import { HomeScreen } from './components/HomeScreen';
 import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
+import { LegalPage } from './components/LegalPage';
 import { MeetingScreen } from './components/MeetingScreen';
 import { MeetingSummary, type MeetingSummaryData } from './components/MeetingSummary';
 import { AuthProvider, useAuth } from './lib/auth';
@@ -26,12 +27,14 @@ import {
 // clearActiveRoom used on auth success so register never resumes a stale room
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge' | 'privacy' | 'terms';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
   const room = new URLSearchParams(location.search).get('room');
   if (path === '/auth/google-bridge') return 'google-bridge';
+  if (path === '/privacy') return 'privacy';
+  if (path === '/terms') return 'terms';
   if (path === '/login') return 'login';
   if (path === '/register' || path === '/signup') return 'register';
   if (path === '/app' || room) return 'home';
@@ -43,18 +46,18 @@ function pathPhase(): Phase {
 function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
   const room = new URLSearchParams(location.search).get('room');
   const base = pathPhase();
-  if (!authed) {
-    if (base === 'google-bridge' || base === 'login' || base === 'register') return { view: base, code: '' };
-    if (isNativeApp() || base === 'home') return { view: 'login', code: '' };
-    return { view: 'market', code: '' };
-  }
-  if (base === 'google-bridge') return { view: 'google-bridge', code: '' };
+  if (base === 'privacy' || base === 'terms' || base === 'google-bridge') return { view: base, code: '' };
   if (room) {
     const code = formatCode(room);
     if (!isFullCode(code) || !isValidMeetingCode(code)) return { view: 'missing', code: '' };
     return { view: instant ? 'room' : 'lobby', code };
   }
-  // WebView / process restart often drops ?room= ? reopen the live session.
+  if (!authed) {
+    if (base === 'login' || base === 'register') return { view: base, code: '' };
+    if (isNativeApp() || base === 'home') return { view: 'login', code: '' };
+    return { view: 'market', code: '' };
+  }
+  // WebView / process restart often drops ?room= — reopen the live session.
   const active = loadActiveRoom();
   if (active) {
     const code = formatCode(active.code);
@@ -147,9 +150,9 @@ function AppRoutes() {
         return;
       }
     }
-    // Native APK always stays in the app routes — never the marketing site.
     if (isNativeApp()) {
-      if (!user && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge') {
+      const hasRoom = Boolean(new URLSearchParams(location.search).get('room'));
+      if (!user && !hasRoom && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms') {
         navigate('/login', true);
       }
     }
@@ -158,22 +161,21 @@ function AppRoutes() {
   useEffect(() => {
     const title =
       view === 'market'
-        ? 'LetsConnect \u2014 free video meetings with memory'
+        ? 'LetsConnect — free video meetings with memory'
         : view === 'login'
-          ? 'Log in \u00b7 LetsConnect'
+          ? 'Log in · LetsConnect'
           : view === 'register'
-            ? 'Sign up \u00b7 LetsConnect'
+            ? 'Sign up · LetsConnect'
             : view === 'missing'
-              ? 'Meeting not found \u00b7 LetsConnect'
+              ? 'Meeting not found · LetsConnect'
               : view === 'home' || !code
                 ? 'LetsConnect'
-                : `${code} \u00b7 LetsConnect`;
+                : `${code} · LetsConnect`;
     document.title = title;
   }, [code, view]);
 
-  // Guests must land in a live room; invalid / unknown codes show Meeting not found.
   useEffect(() => {
-    if (!user || asHost) return;
+    if (asHost) return;
     if (view !== 'lobby' && view !== 'room') return;
     if (!code || !isValidMeetingCode(code)) {
       setView('missing');
@@ -189,7 +191,7 @@ function AppRoutes() {
     return () => {
       cancel = true;
     };
-  }, [user, asHost, view, code]);
+  }, [asHost, view, code]);
 
   useEffect(() => {
     const onPop = () => {
@@ -256,10 +258,12 @@ function AppRoutes() {
     else sessionStorage.removeItem(`lc-host:${formatted}`);
     setRecent(rememberMeeting({ code: formatted, title, ts: Date.now() }));
     saveActiveRoom({ code: formatted, asHost: host, title });
-    try {
-      await saveMeeting({ code: formatted, title, startedAt: Date.now(), attendees: 1 });
-    } catch {
-      /* offline / guest edge */
+    if (user && host) {
+      try {
+        await saveMeeting({ code: formatted, title, startedAt: Date.now(), attendees: 1, reopen: true } as Parameters<typeof saveMeeting>[0] & { reopen?: boolean });
+      } catch {
+        /* offline / guest */
+      }
     }
     const url = new URL(location.href);
     url.pathname = '/app';
@@ -274,11 +278,11 @@ function AppRoutes() {
   async function leave(nextSummary?: MeetingSummaryData) {
     setDocked(false);
     clearActiveRoom();
-    if (code) {
+    if (code && nextSummary?.endedForEveryone && user) {
       try {
         await saveMeeting({ code, endedAt: Date.now() });
       } catch {
-        /* ignore */
+        /* server also ends the row when the room empties */
       }
     }
     const url = new URL(location.href);
@@ -317,20 +321,41 @@ function AppRoutes() {
     return (
       <main className="auth-page">
         <section className="auth-card">
-          <p className="hint">Opening LetsConnect...</p>
+          <p className="hint">Waking up the server…</p>
         </section>
       </main>
     );
   }
 
-  if (!user) {
+  if (view === 'privacy' || view === 'terms') {
+    return (
+      <LegalPage
+        kind={view}
+        theme={settings.theme}
+        onTheme={(theme) => setSettings({ ...settings, theme })}
+        onHome={goMarket}
+      />
+    );
+  }
+
+  function afterAuth() {
+    const pending = sessionStorage.getItem('lc-pending-join');
+    if (pending) {
+      sessionStorage.removeItem('lc-pending-join');
+      void enter(pending, 'LetsConnect meeting', settings.instantJoin ? 'room' : 'lobby', 'guest');
+      return;
+    }
+    goApp();
+  }
+
+  if (!user && view !== 'lobby' && view !== 'room' && view !== 'missing' && view !== 'summary') {
     if (isNativeApp() || view === 'login' || view === 'register') {
       return (
         <AuthScreen
           mode={view === 'register' ? 'register' : 'login'}
           onMode={goAuth}
           onBack={isNativeApp() ? () => goAuth('login') : goMarket}
-          onSuccess={goApp}
+          onSuccess={afterAuth}
         />
       );
     }

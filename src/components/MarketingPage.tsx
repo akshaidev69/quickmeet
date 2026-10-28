@@ -1,7 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Logo } from './icons';
+import { ThemeButton } from './LookControls';
 import { joinWaitlist } from '../lib/api';
 import { formatCode, isValidMeetingCode } from '../lib/code';
+import { loadSettings, saveSettings } from '../lib/storage';
 
 type Props = {
   onLogin: () => void;
@@ -124,6 +126,7 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
   const [waitEmail, setWaitEmail] = useState('');
   const [waitStatus, setWaitStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
   const [waitMessage, setWaitMessage] = useState('');
+  const [theme, setTheme] = useState(loadSettings().theme);
   const start = signedIn ? onApp : onRegister;
 
   useEffect(() => {
@@ -157,12 +160,7 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
       return;
     }
     setJoinError('');
-    if (signedIn) {
-      window.location.assign(`/app?room=${encodeURIComponent(code)}`);
-      return;
-    }
-    sessionStorage.setItem('lc-pending-join', code);
-    onLogin();
+    window.location.assign(`/app?room=${encodeURIComponent(code)}`);
   }
 
   return (
@@ -177,7 +175,7 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
           <a href="#compare">Why us</a>
           <a href="#features">Features</a>
           <a href="#pricing">Pricing</a>
-          <a href="#faq">Help</a>
+          <a href="#faq">FAQ</a>
         </nav>
         <button
           type="button"
@@ -189,6 +187,14 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
           <span />
         </button>
         <div className="luma-nav-actions">
+          <ThemeButton
+            theme={theme}
+            onChange={(next) => {
+              setTheme(next);
+              saveSettings({ ...loadSettings(), theme: next });
+              document.documentElement.dataset.theme = next;
+            }}
+          />
           {signedIn ? (
             <button type="button" className="luma-btn luma-btn-primary" onClick={onApp}>
               Open app
@@ -219,7 +225,7 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
             <a href="#compare" onClick={() => setNavOpen(false)}>Why us</a>
             <a href="#features" onClick={() => setNavOpen(false)}>Features</a>
             <a href="#pricing" onClick={() => setNavOpen(false)}>Pricing</a>
-            <a href="#faq" onClick={() => setNavOpen(false)}>Help</a>
+            <a href="#faq" onClick={() => setNavOpen(false)}>FAQ</a>
             {signedIn ? (
               <button type="button" className="luma-btn luma-btn-primary" onClick={onApp}>
                 Open app
@@ -531,9 +537,10 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
           </div>
           <div>
             <h4>Resources</h4>
-            <a href="#faq">Help</a>
+            <a href="#faq">FAQ</a>
             <a href="#compare">Why us</a>
-            <a href="#privacy">Privacy</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
           </div>
           <div>
             <h4>Account</h4>
