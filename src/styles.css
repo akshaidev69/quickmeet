@@ -1237,13 +1237,23 @@ video.fx-hidden { opacity: 0; }
   font-size: 11px;
   font-weight: 750;
 }
-.tile video.fit-contain, .local-slot video { object-fit: contain; }
+.tile video.fit-contain { object-fit: contain; }
 .tile video.fit-cover { object-fit: cover; }
 .local-slot video, .local-slot .fx-canvas {
-  object-fit: var(--tile-fit, contain);
+  object-fit: var(--tile-fit, cover);
   object-position: var(--tile-pos, 50% 50%);
   transform: scale(var(--self-zoom, 1));
   transform-origin: var(--tile-pos, 50% 50%);
+}
+.tile[data-fit="cover"] video,
+.tile[data-fit="cover"] .fx-canvas,
+.tile[data-fit="cover"] .local-slot video {
+  object-fit: cover !important;
+}
+.tile[data-fit="contain"] video,
+.tile[data-fit="contain"] .fx-canvas,
+.tile[data-fit="contain"] .local-slot video {
+  object-fit: contain !important;
 }
 .tile.has-blur-fill .tile-blur {
   position: absolute;
@@ -3716,6 +3726,18 @@ kbd {
   font-weight: 650;
 }
 .meet-top-overflow-pop button:hover { background: var(--surface-2); }
+.meet-top-overflow-pop button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.meet-overflow-label {
+  margin: 6px 10px 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .room-meet .meet-in-call { background: var(--surface-2); color: var(--text); }
 .room-meet .meet-locked-pill,
 .room-meet .meet-locked-bar {
@@ -4290,6 +4312,75 @@ html[data-shell="mobile"] .room-meet .cmdwrap {
   display: flex;
   flex: 1 1 0;
   min-width: 44px;
+}
+html.is-mobile .phone-only,
+html.is-native .phone-only,
+html[data-shell="mobile"] .phone-only,
+html[data-shell="native"] .phone-only {
+  display: block !important;
+}
+html.is-mobile .desk-only,
+html.is-native .desk-only {
+  display: none !important;
+}
+html.is-mobile button.phone-only,
+html.is-native button.phone-only {
+  display: flex !important;
+}
+html.is-mobile .room-meet .tile video,
+html.is-mobile .room-meet .tile .fx-canvas,
+html.is-mobile .room-meet .local-slot video,
+html.is-native .room-meet .tile video,
+html.is-native .room-meet .tile .fx-canvas,
+html.is-native .room-meet .local-slot video {
+  object-fit: cover;
+}
+html.is-mobile .room-meet .tile[data-fit="cover"] video,
+html.is-mobile .room-meet .tile[data-fit="cover"] .fx-canvas,
+html.is-mobile .room-meet .tile[data-fit="cover"] .local-slot video,
+html.is-native .room-meet .tile[data-fit="cover"] video,
+html.is-native .room-meet .tile[data-fit="cover"] .local-slot video {
+  object-fit: cover !important;
+}
+html.is-mobile .room-meet .tile[data-fit="contain"] video,
+html.is-mobile .room-meet .tile[data-fit="contain"] .local-slot video,
+html.is-native .room-meet .tile[data-fit="contain"] video,
+html.is-native .room-meet .tile[data-fit="contain"] .local-slot video {
+  object-fit: contain !important;
+}
+html.is-mobile .room-meet .tile-blur,
+html.is-native .room-meet .tile-blur {
+  display: none !important;
+}
+html.is-mobile .room-meet .grid.c1,
+html.is-native .room-meet .grid.c1 {
+  place-items: center;
+  place-content: center;
+}
+html.is-mobile .room-meet .grid.c1 .tile,
+html.is-native .room-meet .grid.c1 .tile {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  border-radius: 0;
+  box-shadow: none;
+  transition: width 200ms ease, height 200ms ease, aspect-ratio 200ms ease, border-radius 200ms ease;
+}
+html.is-mobile .room-meet .grid.c1[data-aspect="16:9"] .tile,
+html.is-mobile .room-meet .grid.c1[data-aspect="4:3"] .tile,
+html.is-mobile .room-meet .grid.c1[data-aspect="1:1"] .tile,
+html.is-mobile .room-meet .grid.c1[data-aspect="9:16"] .tile,
+html.is-native .room-meet .grid.c1[data-aspect="16:9"] .tile,
+html.is-native .room-meet .grid.c1[data-aspect="4:3"] .tile,
+html.is-native .room-meet .grid.c1[data-aspect="1:1"] .tile,
+html.is-native .room-meet .grid.c1[data-aspect="9:16"] .tile {
+  aspect-ratio: var(--tile-aspect);
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 16px;
 }
 html.is-mobile .room-meet .cmd,
 html.is-mobile .room-meet .leave,
@@ -6802,16 +6893,22 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   top: 8px;
   left: 8px;
   z-index: 5;
-  min-height: 32px;
-  padding: 4px 10px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
   border: 0;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.92);
-  color: #1f1f1f;
-  font-weight: 700;
-  font-size: 12px;
+  border-radius: 8px;
+  background: rgba(16, 22, 20, 0.55);
+  color: #fff;
+  display: grid;
+  place-items: center;
   opacity: 0;
   pointer-events: auto;
+}
+.tile-frame-btn svg {
+  width: 14px;
+  height: 14px;
 }
 .tile:hover .tile-frame-btn,
 .tile:focus-within .tile-frame-btn,
@@ -6828,13 +6925,13 @@ html.is-mobile .tile-frame-btn {
 }
 .tile-frame-menu {
   position: absolute;
-  top: 42px;
+  top: 40px;
   left: 8px;
   z-index: 6;
   display: grid;
-  gap: 4px;
-  min-width: 180px;
-  padding: 8px;
+  gap: 2px;
+  min-width: 132px;
+  padding: 6px;
   border-radius: 12px;
   background: var(--surface);
   color: var(--text);
@@ -6844,14 +6941,18 @@ html.is-mobile .tile-frame-btn {
 }
 .tile-frame-menu button,
 .tile-frame-menu label {
-  min-height: 44px;
+  min-height: 36px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: inherit;
   text-align: left;
   font-weight: 650;
+  font-size: 13px;
   padding: 0 10px;
+}
+.tile-frame-menu button[aria-pressed="true"] {
+  background: var(--surface-2);
 }
 .tile-frame-menu button:hover { background: var(--surface-2); }
 .wb-root {

@@ -194,3 +194,12 @@ export function IconPin() {
     </Svg>
   );
 }
+
+export function IconCrop() {
+  return (
+    <Svg>
+      <path d="M6 3v14a1 1 0 0 0 1 1h14" />
+      <path d="M3 6h14a1 1 0 0 1 1 1v14" />
+    </Svg>
+  );
+}

@@ -23,6 +23,7 @@ import {
   IconMore,
   IconPeople,
   IconPin,
+  IconCrop,
   IconShare,
   IconShield,
   IconSmile,
@@ -1422,9 +1423,11 @@ async function toggleRecord() {
             : coHostIds.includes(tile.peerId)
               ? 'Co-host'
               : 'Guest';
+    const compact =
+      viewportMobile || document.documentElement.classList.contains('is-mobile') || document.documentElement.classList.contains('is-native');
     const trackPortrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
-    const fit = tileFitFor(frame, tile.key, trackPortrait, viewportMobile);
-    const blurFill = trackPortrait && fit === 'contain' && !viewportMobile;
+    const fit = tileFitFor(frame, tile.key, trackPortrait, compact);
+    const blurFill = trackPortrait && fit === 'contain' && !compact;
     return (
       <Tile
         key={tile.key}
@@ -1753,57 +1756,27 @@ async function toggleRecord() {
                 >
                   Copy link
                 </button>
-                <button
-                  type="button"
-                  aria-pressed={layout === 'grid'}
-                  onClick={() => {
-                    setLayout('grid');
-                    setPopover(null);
-                  }}
-                >
-                  Grid layout
+                <button type="button" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}>
+                  Grid
                 </button>
-                <button
-                  type="button"
-                  aria-pressed={layout === 'speaker'}
-                  onClick={() => {
-                    setLayout('speaker');
-                    setPopover(null);
-                  }}
-                >
-                  Speaker layout
+                <button type="button" aria-pressed={layout === 'speaker'} onClick={() => setLayout('speaker')}>
+                  Speaker
                 </button>
-                <button
-                  type="button"
-                  aria-pressed={layout === 'sidebar'}
-                  onClick={() => {
-                    setLayout('sidebar');
-                    setPopover(null);
-                  }}
-                >
-                  Sidebar layout
+                <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
+                  Sidebar
                 </button>
+                <p className="meet-overflow-label">Display size</p>
                 {(['auto', '16:9', '4:3', '1:1', '9:16'] as LayoutAspect[]).map((ratio) => (
                   <button
                     key={ratio}
                     type="button"
                     aria-pressed={frame.aspect === ratio}
-                    onClick={() => {
-                      patchFrame({ aspect: ratio });
-                      setPopover(null);
-                    }}
+                    onClick={() => patchFrame({ aspect: ratio })}
                   >
-                    Frame {ratio === 'auto' ? 'auto' : ratio}
+                    {ratio === 'auto' ? 'Fill screen' : ratio}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  aria-pressed={frame.centerMe}
-                  onClick={() => {
-                    patchFrame({ centerMe: !frame.centerMe });
-                    setPopover(null);
-                  }}
-                >
+                <button type="button" aria-pressed={frame.centerMe} onClick={() => patchFrame({ centerMe: !frame.centerMe })}>
                   {frame.centerMe ? 'Center me on' : 'Center me'}
                 </button>
               </div>
@@ -1984,7 +1957,12 @@ async function toggleRecord() {
             <div
               className={gridClass(cameras.length)}
               data-aspect={frame.aspect}
-              style={{ ['--tile-aspect' as string]: aspectCss(frame.aspect) || '16 / 9', ['--tile-ar' as string]: String(frame.aspect === '4:3' ? 4 / 3 : frame.aspect === '1:1' ? 1 : frame.aspect === '9:16' ? 9 / 16 : 16 / 9) }}
+              style={{
+                ['--tile-aspect' as string]: aspectCss(frame.aspect) || 'auto',
+                ['--tile-ar' as string]: String(
+                  frame.aspect === '4:3' ? 4 / 3 : frame.aspect === '1:1' ? 1 : frame.aspect === '9:16' ? 9 / 16 : frame.aspect === '16:9' ? 16 / 9 : 0,
+                ),
+              }}
             >
               {cameras.map((tile) => renderTile(tile))}
             </div>
@@ -3041,10 +3019,9 @@ function Tile({
   const frameMenuRef = useOutsideDismiss(() => {
     if (menu) closeFrameMenu();
   });
-  const press = useRef(0);
   const localCamera = tile.you && tile.kind === 'camera';
   const cropStyle = {
-    objectFit: (portrait ? 'contain' : fit) as TileFit,
+    objectFit: fit as TileFit,
     objectPosition: faceObjectPosition(selfPanX, selfPanY),
     transform: `scale(${selfZoom})`,
   };
@@ -3134,15 +3111,8 @@ function Tile({
         layoutRole === 'pip' && 'meet-pip-tile',
         layoutRole === 'main' && 'meet-main-tile',
       )}
-      onPointerDown={() => {
-        press.current = window.setTimeout(() => setMenu(true), 420);
-      }}
-      onPointerUp={() => window.clearTimeout(press.current)}
-      onPointerLeave={() => window.clearTimeout(press.current)}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        setMenu(true);
-      }}
+      data-fit={fit}
+      onContextMenu={(event) => event.preventDefault()}
     >
       {portrait && tile.showVideo && (
         <video ref={blurRef} className="tile-blur" autoPlay muted playsInline aria-hidden="true" />
@@ -3152,7 +3122,7 @@ function Tile({
           className="local-slot"
           ref={slotRef}
           style={{
-            ['--tile-fit' as string]: portrait ? 'contain' : fit,
+            ['--tile-fit' as string]: fit,
             ['--tile-pos' as string]: faceObjectPosition(selfPanX, selfPanY),
             ['--self-zoom' as string]: String(selfZoom),
           }}
@@ -3173,7 +3143,7 @@ function Tile({
           data-rec-off={tile.showVideo ? '0' : '1'}
           data-rec-color={color}
           data-rec-initials={letters}
-          className={cx(fit === 'cover' && !portrait ? 'fit-cover' : 'fit-contain', !tile.showVideo && 'is-off')}
+          className={cx(fit === 'cover' ? 'fit-cover' : 'fit-contain', !tile.showVideo && 'is-off')}
           style={cropStyle}
           autoPlay
           muted
@@ -3268,7 +3238,7 @@ function Tile({
             setMenu((value) => !value);
           }}
         >
-          Frame
+          <IconCrop />
         </button>
         {menu && (
           <>
@@ -3281,21 +3251,23 @@ function Tile({
             <div className="tile-frame-menu" role="menu">
               <button
                 type="button"
+                aria-pressed={fit === 'contain'}
                 onClick={() => {
                   onFit?.('contain');
                   setMenu(false);
                 }}
               >
-                Fit (show full frame)
+                Fit
               </button>
               <button
                 type="button"
+                aria-pressed={fit === 'cover'}
                 onClick={() => {
                   onFit?.('cover');
                   setMenu(false);
                 }}
               >
-                Fill (crop to tile)
+                Fill
               </button>
               {onSelfCrop && (
                 <label>
