@@ -44,6 +44,9 @@ import {
 } from '../lib/record';
 import { Whiteboard } from './Whiteboard';
 import { MeetingPip } from './MeetingPip';
+import { isNativeApp } from '../lib/native';
+import { pauseAutoFloat } from '../lib/pipGate';
+import { onNativePipAction, onNativePipMode, setPipControls } from '../lib/nativeMeeting';
 import { detectFaceCenter, faceObjectPosition, tickFaceEase } from '../lib/faceFrame';
 import { aspectCss, loadFramePrefs, saveFramePrefs, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
 import { buildCatchUp, harvestPromises, type CatchUpEvent } from '../lib/meetingIntel';
@@ -117,6 +120,26 @@ const shortcuts = [
 
 function cx(...parts: Array<string | false | undefined>) {
   return parts.filter(Boolean).join(' ');
+}
+
+function isShareCancel(error: unknown) {
+  const name = error instanceof DOMException ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error || '');
+  return name === 'NotAllowedError' || name === 'AbortError' || /denied|permission|cancel|abort/i.test(message);
+}
+
+function shareFailMessage(error: unknown) {
+  const name = error instanceof DOMException ? error.name : '';
+  const message = error instanceof Error ? error.message : '';
+  if (name === 'NotFoundError') return 'No screen or window was available to share.';
+  if (name === 'NotReadableError' || name === 'InvalidStateError') {
+    return 'Could not capture that screen. Close other capture windows and try again.';
+  }
+  if (name === 'NotSupportedError' || /support/i.test(message)) {
+    return "Screen sharing isn't available in this browser. Try Chrome or Edge.";
+  }
+  if (/gesture|user|activation/i.test(message)) return 'Click Screen again to share.';
+  return 'Could not share the screen. Allow screen capture when the browser asks.';
 }
 
 function hasVideo(stream: MediaStream | null) {
@@ -354,7 +377,6 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const [viewportMobile, setViewportMobile] = useState(() => window.matchMedia('(max-width: 820px)').matches);
   const [boardOpen, setBoardOpen] = useState(false);
   const [frame, setFrame] = useState<FramePrefs>(loadFramePrefs);
-  const [pipGesture, setPipGesture] = useState(() => sessionStorage.getItem('LetsConnect.pipGesture') === '1');
   const [pipNonce, setPipNonce] = useState(0);
   const [faceEase, setFaceEase] = useState({ x: 0.5, y: 0.5, zoom: 1 });
   const [boardEvents, setBoardEvents] = useState<CatchUpEvent[]>([]);
@@ -663,6 +685,29 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     };
   }, []);
 
+  useEffect(() => {
+    void setPipControls(micOn, camOn);
+  }, [camOn, micOn]);
+
+  const pipActRef = useRef({ toggleMic, toggleCam });
+  pipActRef.current = { toggleMic, toggleCam };
+
+  useEffect(() => {
+    const stopMode = onNativePipMode((inPip) => {
+      document.documentElement.classList.toggle('is-pip', inPip);
+    });
+    const stopAct = onNativePipAction((act) => {
+      if (act === 'mic') pipActRef.current.toggleMic();
+      if (act === 'cam') pipActRef.current.toggleCam();
+      if (act === 'leave') finishLeaveRef.current?.();
+    });
+    return () => {
+      stopMode();
+      stopAct();
+      document.documentElement.classList.remove('is-pip');
+    };
+  }, []);
+
   // Keep active-room stamp fresh so process death still restores this meeting.
   useEffect(() => {
     let alive = true;
@@ -792,12 +837,16 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
 
   useEffect(() => {
     if (!captionsOn) return;
-    if (captionError === 'denied') {
-      toast('Allow microphone access to use captions.');
+    if (captionError === 'unsupported' || !captionSupported) {
+      toast('Captions need Chrome or Edge on HTTPS.', { key: 'caption-unsupported' });
       return;
     }
-    if (captionError === 'failed') toast('Captions could not start. Try again.');
-  }, [captionError, captionsOn, toast]);
+    if (captionError === 'denied') {
+      toast('Allow microphone access to use captions.', { key: 'caption-mic' });
+      return;
+    }
+    if (captionError === 'failed') toast('Captions could not start. Try again.', { key: 'caption-fail' });
+  }, [captionError, captionSupported, captionsOn, toast]);
 
   useEffect(() => {
     if (!settings.sounds) {
@@ -943,48 +992,53 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       return;
     }
 
-    setSharingPick(true);
-    try {
+    if (isNativeApp()) {
+      const resume = pauseAutoFloat();
+      setSharingPick(true);
       try {
-        const { isNativeApp } = await import('../lib/native');
         const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
-        if (isNativeApp() && (await nativeScreenShareAvailable())) {
+        if (await nativeScreenShareAvailable()) {
           const display = await startNativeScreenShare();
           display.getVideoTracks()[0]?.addEventListener('ended', () => clearScreenShare(display));
           setScreenStream(display);
-          toast('Sharing your screen — app stays open in a small window.');
+          toast('Sharing your screen — app stays open in a small window.', { key: 'share-on' });
           return;
         }
       } catch (error) {
-        if (error instanceof Error && /denied|permission|cancel|abort/i.test(error.message)) {
-          toast('Screen share canceled', { key: 'share-cancel' });
-          return;
-        }
-      }
-
-      if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
-        toast("Screen sharing isn't supported in this browser", { key: 'share-unsupported' });
+        toast(isShareCancel(error) ? 'Screen share canceled' : shareFailMessage(error), {
+          key: isShareCancel(error) ? 'share-cancel' : 'share-fail',
+        });
         return;
+      } finally {
+        resume();
+        setSharingPick(false);
       }
+    }
 
+    if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+      toast("Screen sharing isn't available here. Try Chrome or Edge.", { key: 'share-unsupported' });
+      return;
+    }
+
+    const resume = pauseAutoFloat();
+    // Start capture on this click so the browser still treats it as a user gesture.
+    const pending = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    setSharingPick(true);
+    try {
       let display: MediaStream;
       try {
-        display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+        display = await pending;
       } catch (error) {
-        const name = error instanceof DOMException ? error.name : '';
-        if (name === 'NotAllowedError' || name === 'AbortError') {
+        if (isShareCancel(error)) {
           toast('Screen share canceled', { key: 'share-cancel' });
           return;
         }
         try {
           display = await navigator.mediaDevices.getDisplayMedia({ video: true });
         } catch (retryError) {
-          const retryName = retryError instanceof DOMException ? retryError.name : '';
-          if (retryName === 'NotAllowedError' || retryName === 'AbortError') {
-            toast('Screen share canceled', { key: 'share-cancel' });
-            return;
-          }
-          toast('Could not share the screen. Allow screen capture when prompted.', { key: 'share-fail' });
+          toast(isShareCancel(retryError) ? 'Screen share canceled' : shareFailMessage(retryError), {
+            key: isShareCancel(retryError) ? 'share-cancel' : 'share-fail',
+          });
           return;
         }
       }
@@ -993,9 +1047,8 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       });
       setScreenStream(display);
       toast('Sharing your screen.', { key: 'share-on' });
-    } catch {
-      toast('Could not share the screen. Allow screen capture when prompted.', { key: 'share-fail' });
     } finally {
+      resume();
       setSharingPick(false);
     }
   }
@@ -2157,12 +2210,6 @@ async function toggleRecord() {
         onBack={() => {
           if (docked) onRestore?.();
           else setPanel(null);
-        }}
-        onAutoFloat={(value) => patchFrame({ autoFloat: value })}
-        gestureNeeded={!pipGesture}
-        onGesture={() => {
-          sessionStorage.setItem('LetsConnect.pipGesture', '1');
-          setPipGesture(true);
         }}
         onStatus={(text) => toast(text)}
         openSignal={pipNonce}

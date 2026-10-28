@@ -130,7 +130,7 @@ export function SettingsDialog({ settings, onChange, onClose, onRetry }: Props) 
             defaultChecked={loadFramePrefs().autoFloat}
             onChange={(event) => saveFramePrefs({ ...loadFramePrefs(), autoFloat: event.target.checked })}
           />
-          <span>Auto float when I switch tabs</span>
+          <span>Float the meeting when I switch tabs or apps</span>
         </label>
         {onRetry && (
           <button type="button" className="secondary" onClick={onRetry}>

@@ -7163,17 +7163,6 @@ html.is-mobile .tile-frame-btn {
   color: var(--text);
   font-size: 16px;
 }
-.meet-float-prompt {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  right: 12px;
-  z-index: 30;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
 .dash-incall {
   display: flex;
   flex-wrap: wrap;
@@ -7310,4 +7299,62 @@ html[data-shell="mobile"] .seg button {
 }
 .modal-back {
   z-index: var(--z-modal);
+}
+
+/* Native / system PiP: show only the video, not the full meeting chrome. */
+html.is-pip .room-meet > header,
+html.is-pip .room-meet > footer,
+html.is-pip .room-meet .controls,
+html.is-pip .room-meet .toasts,
+html.is-pip .room-meet .notice-row,
+html.is-pip .room-meet .share-pending-banner,
+html.is-pip .room-meet .meet-locked-bar,
+html.is-pip .room-meet .side,
+html.is-pip .room-meet .panel,
+html.is-pip .room-meet .popover,
+html.is-pip .room-meet .backdrop,
+html.is-pip .room-meet .captions,
+html.is-pip .meet-float-bubble,
+html.is-pip .meet-pip-video,
+html.is-pip .meet-pip-canvas,
+html.is-pip .pinbtn,
+html.is-pip .tile-bar button,
+html.is-pip .meet-top-overflow {
+  display: none !important;
+}
+html.is-pip,
+html.is-pip body,
+html.is-pip #root,
+html.is-pip .room-meet,
+html.is-pip .room-body,
+html.is-pip .stage {
+  background: #111814 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 100% !important;
+  width: 100% !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+html.is-pip .room-meet,
+html.is-pip .room-body,
+html.is-pip .stage {
+  position: fixed;
+  inset: 0;
+  display: grid;
+}
+html.is-pip .tile {
+  border-radius: 0 !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  height: 100% !important;
+  max-height: none !important;
+  aspect-ratio: auto !important;
+}
+html.is-pip .meet-mobile-pip {
+  width: 28%;
+  height: 32%;
+  right: 6px;
+  bottom: 6px;
 }

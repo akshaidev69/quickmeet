@@ -160,29 +160,43 @@ export function HomeScreen({
     });
   }, [cloud, schedule, today]);
 
-  const meetingsToday = useMemo(() => {
+  const heldCodes = useMemo(() => {
     const codes = new Set<string>();
-    for (const item of schedule) {
-      if (item.when && formatMeetingDayKey(item.when) === todayKey) codes.add(item.code);
-    }
-    for (const item of cloud) {
-      if (formatMeetingDayKey(item.startedAt) === todayKey) codes.add(item.code);
-    }
-    return codes.size;
-  }, [cloud, schedule, todayKey]);
+    for (const item of cloud) codes.add(formatCode(item.code));
+    for (const item of recent) codes.add(formatCode(item.code));
+    return codes;
+  }, [cloud, recent]);
 
   const daySchedule = useMemo(
     () =>
       schedule
         .filter((item) => item.when && formatMeetingDayKey(item.when) === selectedDay)
+        .filter((item) => !heldCodes.has(formatCode(item.code)))
         .sort((a, b) => new Date(a.when).getTime() - new Date(b.when).getTime()),
-    [schedule, selectedDay],
+    [heldCodes, schedule, selectedDay],
   );
 
-  const dayCloud = useMemo(
-    () => cloud.filter((item) => formatMeetingDayKey(item.startedAt) === selectedDay),
+  const dayLive = useMemo(
+    () =>
+      cloud.filter(
+        (item) => !item.endedAt && formatMeetingDayKey(item.startedAt) === selectedDay,
+      ),
     [cloud, selectedDay],
   );
+
+  const meetingsToday = useMemo(() => {
+    const codes = new Set<string>();
+    for (const item of schedule) {
+      if (!item.when || formatMeetingDayKey(item.when) !== todayKey) continue;
+      if (heldCodes.has(formatCode(item.code))) continue;
+      codes.add(formatCode(item.code));
+    }
+    for (const item of cloud) {
+      if (item.endedAt) continue;
+      if (formatMeetingDayKey(item.startedAt) === todayKey) codes.add(formatCode(item.code));
+    }
+    return codes.size;
+  }, [cloud, heldCodes, schedule, todayKey]);
 
   const selectedDayLabel = useMemo(() => {
     const match = weekDays.find((day) => day.key === selectedDay);
@@ -193,19 +207,6 @@ export function HomeScreen({
 
   const dashRows = useMemo(() => {
     const byCode = new Map<string, DashRow>();
-
-    for (const item of schedule) {
-      const formatted = formatCode(item.code);
-      byCode.set(formatted, {
-        id: `sched-${item.id}`,
-        code: formatted,
-        title: item.title,
-        subtitle: item.when ? whenLabel(item.when) : 'No time set',
-        status: 'scheduled',
-        hosted: true,
-        scheduleId: item.id,
-      });
-    }
 
     for (const item of cloud) {
       const formatted = formatCode(item.code);
@@ -346,6 +347,8 @@ export function HomeScreen({
       }
     }
     setJoinError('');
+    const leftover = schedule.filter((item) => formatCode(item.code) !== formatted);
+    if (leftover.length !== schedule.length) onSchedule(leftover);
     onEnter(formatted, label, settings.instantJoin ? 'room' : 'lobby', role);
   }
 
@@ -737,7 +740,7 @@ export function HomeScreen({
             <div className="dash-panel-head">
               <h2 id="dash-upcoming-title">Up next {'·'} {selectedDayLabel}</h2>
             </div>
-            {daySchedule.length === 0 && dayCloud.length === 0 ? (
+            {daySchedule.length === 0 && dayLive.length === 0 ? (
               <div className="dash-empty">
                 <p>No meetings on {selectedDayLabel.toLowerCase()}.</p>
                 <button type="button" className="dash-btn dash-btn-ghost" onClick={() => setPlanning(true)}>
@@ -751,7 +754,7 @@ export function HomeScreen({
                     <div className="dash-list-body">
                       <strong>{item.title}</strong>
                       <span>{item.when ? whenLabel(item.when) : 'Scheduled'}</span>
-                      <em className={`dash-status dash-status-scheduled`}>Scheduled</em>
+                      <em className="dash-status dash-status-scheduled">Scheduled</em>
                       <code>{item.code}</code>
                     </div>
                     <div className="dash-row-actions">
@@ -768,30 +771,21 @@ export function HomeScreen({
                     </div>
                   </li>
                 ))}
-                {dayCloud.map((item) => {
-                  const live = !item.endedAt;
-                  const duration = formatDuration(item.durationMs, item.endedAt);
-                  return (
-                    <li key={item.id} className="dash-list-item">
-                      <div className="dash-list-body">
-                        <strong>{item.title}</strong>
-                        <span>
-                          {whenLabel(item.startedAt)}
-                          {duration && duration !== 'Ended' ? ` · ${duration}` : ''}
-                        </span>
-                        <em className={`dash-status ${live ? 'dash-status-live' : 'dash-status-ended'}`}>
-                          {live ? 'Live' : 'Ended'}
-                        </em>
-                        <code>{item.code}</code>
-                      </div>
-                      <div className="dash-row-actions">
-                        <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void join(item.code, item.title, 'host')}>
-                          {live ? 'Open' : 'Rejoin'}
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
+                {dayLive.map((item) => (
+                  <li key={item.id} className="dash-list-item">
+                    <div className="dash-list-body">
+                      <strong>{item.title}</strong>
+                      <span>{whenLabel(item.startedAt)}</span>
+                      <em className="dash-status dash-status-live">Live</em>
+                      <code>{item.code}</code>
+                    </div>
+                    <div className="dash-row-actions">
+                      <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void join(item.code, item.title, 'host')}>
+                        Open
+                      </button>
+                    </div>
+                  </li>
+                ))}
               </ul>
             )}
           </section>

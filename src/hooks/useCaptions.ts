@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { pauseAutoFloat } from '../lib/pipGate';
 
 type CaptionError = 'unsupported' | 'denied' | 'failed' | null;
 
@@ -74,14 +75,17 @@ export function useCaptions(enabled: boolean, onText: (text: string, final: bool
       }, 250);
     };
 
+    const resumeFloat = pauseAutoFloat();
     try {
       rec.start();
     } catch {
       setError('failed');
     }
+    window.setTimeout(resumeFloat, 1500);
 
     return () => {
       stopped = true;
+      resumeFloat();
       window.clearTimeout(restartTimer);
       rec.onresult = null;
       rec.onerror = null;

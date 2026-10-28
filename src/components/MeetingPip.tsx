@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { colorFor, initials } from '../lib/people';
+import { autoFloatPaused } from '../lib/pipGate';
 
 export type PipPerson = {
   id: string;
@@ -26,9 +27,6 @@ type Props = {
   onHand: () => void;
   onLeave: () => void;
   onBack: () => void;
-  onAutoFloat: (value: boolean) => void;
-  gestureNeeded: boolean;
-  onGesture: () => void;
   onStatus?: (text: string) => void;
   openSignal?: number;
 };
@@ -43,20 +41,31 @@ function docPip(): DocPip | null {
 
 const PIP_CSS = `
   :root { color-scheme: dark; }
-  html, body { margin: 0; background: #111814; color: #eef3ef; font: 600 13px Inter, Segoe UI, sans-serif; height: 100%; }
-  .pip { display: grid; grid-template-rows: 1fr auto; height: 100%; }
-  .grid { display: grid; gap: 4px; padding: 6px; height: 100%; background: #0d1411; }
+  html, body { margin: 0; background: #111814; color: #eef3ef; font: 600 13px Inter, Segoe UI, sans-serif; height: 100%; overflow: hidden; }
+  .pip { display: grid; grid-template-rows: 1fr 52px; height: 100%; }
+  .grid { display: grid; gap: 4px; padding: 6px; min-height: 0; height: 100%; background: #0d1411; }
   .grid.c1 { grid-template-columns: 1fr; }
   .grid.c2 { grid-template-columns: 1fr 1fr; }
-  .tile { position: relative; overflow: hidden; border-radius: 10px; background: #1a2420; }
+  .tile { position: relative; overflow: hidden; border-radius: 10px; background: #1a2420; min-width: 0; min-height: 0; }
   video { width: 100%; height: 100%; object-fit: cover; background: #111; }
   .avatar { position: absolute; inset: 0; display: grid; place-items: center; font-size: 22px; color: #fff; }
-  .name { position: absolute; left: 6px; bottom: 6px; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 999px; font-size: 11px; }
-  .bar { display: flex; gap: 6px; justify-content: center; padding: 8px; background: #1a2420; }
-  button { min-width: 44px; min-height: 36px; border: 0; border-radius: 999px; background: #2a3530; color: #eef3ef; font-weight: 700; cursor: pointer; }
+  .tile.has-video .avatar { display: none; }
+  .name { position: absolute; left: 6px; bottom: 6px; background: rgba(0,0,0,.55); padding: 2px 6px; border-radius: 999px; font-size: 11px; pointer-events: none; }
+  .bar { display: flex; flex-wrap: nowrap; gap: 6px; justify-content: center; align-items: center; padding: 8px; background: #1a2420; }
+  button { flex: 0 0 auto; min-width: 56px; height: 36px; border: 0; border-radius: 999px; background: #2a3530; color: #eef3ef; font-weight: 700; cursor: pointer; white-space: nowrap; }
   button.danger { background: #c5221f; color: #fff; }
   button.on { background: #137333; }
 `;
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, (ch) => {
+    if (ch === '&') return '&amp;';
+    if (ch === '<') return '&lt;';
+    if (ch === '>') return '&gt;';
+    if (ch === '"') return '&quot;';
+    return '&#39;';
+  });
+}
 
 function sourceVideo(person: PipPerson | undefined) {
   if (!person) return null;
@@ -107,6 +116,11 @@ type ConferencingSession = MediaSession & {
   setCameraActive?: (active: boolean) => void;
 };
 
+function rosterFor(people: PipPerson[]) {
+  const live = people.filter((person) => person.showVideo).slice(0, 4);
+  return live.length ? live : people.slice(0, 4);
+}
+
 export function MeetingPip({
   people,
   micOn,
@@ -122,9 +136,6 @@ export function MeetingPip({
   onHand,
   onLeave,
   onBack,
-  onAutoFloat,
-  gestureNeeded,
-  onGesture,
   onStatus,
   openSignal = 0,
 }: Props) {
@@ -133,20 +144,22 @@ export function MeetingPip({
   const peopleRef = useRef(people);
   peopleRef.current = people;
   const winRef = useRef<Window | null>(null);
+  const autoOpened = useRef(false);
+  const opening = useRef(false);
   const [bubble, setBubble] = useState({ x: 16, y: 96 });
   const [gone, setGone] = useState(false);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
   const controls = useRef({ onMic, onCam, onHand, onLeave, onBack, micOn, camOn, hand });
   controls.current = { onMic, onCam, onHand, onLeave, onBack, micOn, camOn, hand };
-  const onGestureRef = useRef(onGesture);
-  onGestureRef.current = onGesture;
   const onStatusRef = useRef(onStatus);
   onStatusRef.current = onStatus;
+  const activeRef = useRef<PipPerson | undefined>(undefined);
 
   const active =
     people.find((person) => person.speaking && person.showVideo) ||
     people.find((person) => person.showVideo) ||
     people[0];
+  activeRef.current = active;
   const showBubble = !gone && (docked || (mobile && panelOpen && !boardOpen));
 
   const paintFallback = useCallback(() => {
@@ -159,79 +172,112 @@ export function MeetingPip({
       canvas.width = 640;
       canvas.height = 360;
     }
+    const person = activeRef.current;
     ctx.fillStyle = '#111814';
     ctx.fillRect(0, 0, 640, 360);
-    const source = sourceVideo(active);
+    const source = sourceVideo(person);
     if (source && source.readyState >= 2 && source.videoWidth > 0) {
       ctx.drawImage(source, 0, 0, 640, 360);
     } else {
-      ctx.fillStyle = active ? colorFor(active.name) : '#1a2420';
+      ctx.fillStyle = person ? colorFor(person.name) : '#1a2420';
       ctx.beginPath();
       ctx.arc(320, 168, 58, 0, Math.PI * 2);
       ctx.fill();
       ctx.fillStyle = '#fff';
       ctx.font = '700 28px Inter, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(active ? initials(active.name) : 'LC', 320, 178);
+      ctx.fillText(person ? initials(person.name) : 'LC', 320, 178);
     }
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
     ctx.fillRect(16, 308, 240, 32);
     ctx.fillStyle = '#fff';
     ctx.font = '600 15px Inter, sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(active?.name || 'LetsConnect', 24, 330);
+    ctx.fillText(person?.name || 'LetsConnect', 24, 330);
     if (video && !video.srcObject) {
-      video.srcObject = canvas.captureStream(15);
+      video.srcObject = canvas.captureStream(12);
       video.muted = true;
       void video.play().catch(() => undefined);
     }
-  }, [active]);
+  }, []);
 
-  const fillPipWindow = useCallback((win: Window) => {
-    const roster = peopleRef.current.filter((person) => person.showVideo).slice(0, 4);
-    const tiles = (roster.length ? roster : peopleRef.current.slice(0, 4))
-      .map(
-        (person) => `
-        <article class="tile" data-id="${person.id}">
-          <video autoplay playsinline muted></video>
-          <div class="avatar" style="background:${colorFor(person.name)}">${initials(person.name)}</div>
-          <span class="name">${person.name}${person.you ? ' (You)' : ''}</span>
-        </article>`,
-      )
-      .join('');
-    win.document.body.innerHTML = `
-      <div class="pip">
-        <div class="grid c${Math.min(2, Math.max(1, roster.length > 1 ? 2 : 1))}">${tiles}</div>
-        <div class="bar">
-          <button data-act="mic">${controls.current.micOn ? 'Mic' : 'Muted'}</button>
-          <button data-act="cam">${controls.current.camOn ? 'Cam' : 'Cam off'}</button>
-          <button data-act="hand">${controls.current.hand ? 'Lower' : 'Hand'}</button>
-          <button data-act="back">Back</button>
-          <button class="danger" data-act="leave">Leave</button>
-        </div>
-      </div>`;
-    win.document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
-      const id = video.parentElement?.getAttribute('data-id');
-      const person = peopleRef.current.find((item) => item.id === id);
-      if (person?.stream) video.srcObject = person.stream;
-      void video.play().catch(() => undefined);
-    });
-    win.document.querySelectorAll('button').forEach((button) => {
-      button.addEventListener('click', () => {
-        const act = button.getAttribute('data-act');
-        if (act === 'mic') controls.current.onMic();
-        if (act === 'cam') controls.current.onCam();
-        if (act === 'hand') controls.current.onHand();
-        if (act === 'back') {
-          controls.current.onBack();
-          win.close();
-        }
-        if (act === 'leave') {
-          controls.current.onLeave();
-          win.close();
-        }
+  const syncPipWindow = useCallback((win: Window) => {
+    const roster = rosterFor(peopleRef.current);
+    let root = win.document.querySelector('.pip');
+    if (!root) {
+      win.document.body.innerHTML = `
+        <div class="pip">
+          <div class="grid c1"></div>
+          <div class="bar">
+            <button type="button" data-act="mic">Mic</button>
+            <button type="button" data-act="cam">Cam</button>
+            <button type="button" data-act="hand">Hand</button>
+            <button type="button" data-act="back">Back</button>
+            <button type="button" class="danger" data-act="leave">Leave</button>
+          </div>
+        </div>`;
+      root = win.document.querySelector('.pip');
+      win.document.querySelectorAll('button').forEach((button) => {
+        button.addEventListener('click', () => {
+          const act = button.getAttribute('data-act');
+          if (act === 'mic') controls.current.onMic();
+          if (act === 'cam') controls.current.onCam();
+          if (act === 'hand') controls.current.onHand();
+          if (act === 'back') {
+            controls.current.onBack();
+            win.close();
+          }
+          if (act === 'leave') {
+            controls.current.onLeave();
+            win.close();
+          }
+        });
       });
+    }
+    const grid = win.document.querySelector('.grid');
+    if (!grid) return;
+    grid.className = `grid c${roster.length > 1 ? 2 : 1}`;
+    const ids = roster.map((person) => person.id);
+    const existing = [...grid.querySelectorAll<HTMLElement>('.tile')];
+    const currentIds = existing.map((tile) => tile.getAttribute('data-id') || '');
+    if (currentIds.join('|') !== ids.join('|')) {
+      grid.innerHTML = roster
+        .map(
+          (person) => `
+          <article class="tile" data-id="${escapeHtml(person.id)}">
+            <video autoplay playsinline muted></video>
+            <div class="avatar" style="background:${colorFor(person.name)}">${escapeHtml(initials(person.name))}</div>
+            <span class="name">${escapeHtml(person.name)}${person.you ? ' (You)' : ''}</span>
+          </article>`,
+        )
+        .join('');
+    }
+    roster.forEach((person) => {
+      const tile = grid.querySelector<HTMLElement>(`[data-id="${person.id.replace(/"/g, '')}"]`);
+      if (!tile) return;
+      tile.classList.toggle('has-video', Boolean(person.showVideo && person.stream));
+      const video = tile.querySelector('video');
+      if (!video) return;
+      if (person.stream && video.srcObject !== person.stream) {
+        video.srcObject = person.stream;
+        void video.play().catch(() => undefined);
+      }
     });
+    const mic = win.document.querySelector('[data-act="mic"]');
+    const cam = win.document.querySelector('[data-act="cam"]');
+    const handBtn = win.document.querySelector('[data-act="hand"]');
+    if (mic) {
+      mic.textContent = controls.current.micOn ? 'Mic' : 'Muted';
+      mic.classList.toggle('on', controls.current.micOn);
+    }
+    if (cam) {
+      cam.textContent = controls.current.camOn ? 'Cam' : 'Cam off';
+      cam.classList.toggle('on', controls.current.camOn);
+    }
+    if (handBtn) {
+      handBtn.textContent = controls.current.hand ? 'Lower' : 'Hand';
+      handBtn.classList.toggle('on', controls.current.hand);
+    }
   }, []);
 
   const openDocumentPip = useCallback(async () => {
@@ -239,7 +285,7 @@ export function MeetingPip({
     if (!api) return false;
     try {
       if (winRef.current && !winRef.current.closed) {
-        fillPipWindow(winRef.current);
+        syncPipWindow(winRef.current);
         return true;
       }
       const win = await api.requestWindow({ width: 420, height: 280 });
@@ -247,7 +293,7 @@ export function MeetingPip({
       const style = win.document.createElement('style');
       style.textContent = PIP_CSS;
       win.document.head.appendChild(style);
-      fillPipWindow(win);
+      syncPipWindow(win);
       win.addEventListener('pagehide', () => {
         winRef.current = null;
       });
@@ -255,17 +301,19 @@ export function MeetingPip({
     } catch {
       return false;
     }
-  }, [fillPipWindow]);
+  }, [syncPipWindow]);
 
   const openVideoPip = useCallback(async () => {
     paintFallback();
     const compositor = pipVideoRef.current;
-    const live = sourceVideo(active);
-    const videos = [compositor, live].filter((node, index, list): node is HTMLVideoElement => Boolean(node) && list.indexOf(node) === index);
+    const live = sourceVideo(activeRef.current);
+    const videos = [compositor, live].filter(
+      (node, index, list): node is HTMLVideoElement => Boolean(node) && list.indexOf(node) === index,
+    );
     let lastError = 'Picture-in-picture is not available in this browser.';
     for (const video of videos) {
       if (!video.srcObject && compositor && canvasRef.current && video === compositor) {
-        video.srcObject = canvasRef.current.captureStream(15);
+        video.srcObject = canvasRef.current.captureStream(12);
         video.muted = true;
       }
       try {
@@ -275,46 +323,77 @@ export function MeetingPip({
       }
     }
     throw new Error(lastError);
-  }, [active, paintFallback]);
+  }, [paintFallback]);
+
+  function isFloating() {
+    if (winRef.current && !winRef.current.closed) return true;
+    if (document.pictureInPictureElement) return true;
+    const safari = pipVideoRef.current as HTMLVideoElement & { webkitPresentationMode?: string };
+    return safari?.webkitPresentationMode === 'picture-in-picture';
+  }
+
+  const closeFloat = useCallback(async () => {
+    if (winRef.current && !winRef.current.closed) {
+      winRef.current.close();
+      winRef.current = null;
+    }
+    if (document.pictureInPictureElement) {
+      await document.exitPictureInPicture().catch(() => undefined);
+    }
+    const safari = pipVideoRef.current as HTMLVideoElement & {
+      webkitPresentationMode?: string;
+      webkitSetPresentationMode?: (mode: string) => void;
+    };
+    if (safari?.webkitPresentationMode === 'picture-in-picture') {
+      safari.webkitSetPresentationMode?.('inline');
+    }
+    autoOpened.current = false;
+  }, []);
 
   const openFloat = useCallback(
-    async (fromHide = false) => {
+    async (reason: 'manual' | 'media-session' | 'hide') => {
+      if (isFloating() || opening.current) return true;
+      opening.current = true;
       paintFallback();
       try {
-        const { isNativeApp } = await import('../lib/native');
-        if (isNativeApp()) {
-          const { enterPip } = await import('../lib/nativeMeeting');
-          if (await enterPip()) {
-            onGestureRef.current();
-            return true;
+        try {
+          const { isNativeApp } = await import('../lib/native');
+          if (isNativeApp()) {
+            if (reason === 'hide') return false;
+            const { enterPip } = await import('../lib/nativeMeeting');
+            if (await enterPip()) {
+              autoOpened.current = reason !== 'manual';
+              return true;
+            }
+            if (reason !== 'manual') return false;
           }
+        } catch {
+          /* web or older APK */
         }
-      } catch {
-        /* web or older APK */
-      }
-      try {
-        await openVideoPip();
-        onGestureRef.current();
-        return true;
-      } catch (error) {
-        if (!fromHide) {
+        if (reason !== 'hide') {
           try {
             const docOk = await raceTimeout(openDocumentPip(), 2500, 'Floating window timed out');
             if (docOk) {
-              onGestureRef.current();
+              autoOpened.current = reason !== 'manual';
               return true;
             }
           } catch {
             /* document PiP blocked */
           }
-          const message = error instanceof Error ? error.message : 'Could not open the floating window.';
-          onStatusRef.current?.(
-            /gesture|user|NotAllowed/i.test(message)
-              ? 'Click Enable floating window once — the browser needs that click before it can float on tab switch.'
-              : message,
-          );
         }
-        return false;
+        try {
+          await openVideoPip();
+          autoOpened.current = reason !== 'manual';
+          return true;
+        } catch (error) {
+          if (reason === 'manual') {
+            const message = error instanceof Error ? error.message : 'Could not open the floating window.';
+            onStatusRef.current?.(message);
+          }
+          return false;
+        }
+      } finally {
+        opening.current = false;
       }
     },
     [openDocumentPip, openVideoPip, paintFallback],
@@ -322,15 +401,23 @@ export function MeetingPip({
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const video = pipVideoRef.current;
+    const video = pipVideoRef.current as (HTMLVideoElement & { autoPictureInPicture?: boolean }) | null;
     if (!canvas || !video) return;
     canvas.width = 640;
     canvas.height = 360;
     video.muted = true;
     video.playsInline = true;
+    video.autoplay = true;
     video.disablePictureInPicture = false;
-    if (!video.srcObject) video.srcObject = canvas.captureStream(15);
-    void video.play().catch(() => undefined);
+    video.autoPictureInPicture = true;
+    video.setAttribute('autopictureinpicture', '');
+    if (!video.srcObject) video.srcObject = canvas.captureStream(12);
+    const keepPlaying = () => {
+      if (!video.paused) return;
+      if (document.pictureInPictureElement && document.pictureInPictureElement !== video) return;
+      void video.play().catch(() => undefined);
+    };
+    keepPlaying();
     const media = navigator.mediaSession as ConferencingSession;
     const bind = (action: string, handler: MediaSessionActionHandler | null) => {
       try {
@@ -342,15 +429,17 @@ export function MeetingPip({
     try {
       media.metadata = new MediaMetadata({
         title: 'LetsConnect meeting',
-        artist: active?.name || 'Meeting',
-        album: 'In a call',
+        artist: 'In a call',
+        album: 'LetsConnect',
       });
       media.playbackState = 'playing';
     } catch {
       /* media session unsupported */
     }
     bind('enterpictureinpicture', () => {
-      void openVideoPip().catch(() => undefined);
+      if (!autoFloat || autoFloatPaused()) return;
+      autoOpened.current = true;
+      void openFloat('media-session');
     });
     bind('togglemicrophone', () => {
       controls.current.onMic();
@@ -373,42 +462,66 @@ export function MeetingPip({
       bind('togglecamera', null);
       bind('hangup', null);
     };
-  }, [active?.name, camOn, micOn, openVideoPip]);
+  }, [autoFloat, camOn, micOn, openFloat]);
 
   const openFloatRef = useRef(openFloat);
   openFloatRef.current = openFloat;
+  const closeFloatRef = useRef(closeFloat);
+  closeFloatRef.current = closeFloat;
 
   useEffect(() => {
     if (!openSignal) return;
-    void openFloatRef.current(false);
+    autoOpened.current = false;
+    void openFloatRef.current('manual');
   }, [openSignal]);
 
   useEffect(() => {
     if (!autoFloat) return;
-    const tryHide = () => {
-      if (document.visibilityState !== 'hidden' && document.hasFocus()) return;
-      void openFloat(true);
+    let hideTimer = 0;
+    let showTimer = 0;
+    const onHide = () => {
+      if (autoFloatPaused()) return;
+      window.clearTimeout(showTimer);
+      hideTimer = window.setTimeout(() => {
+        if (autoFloatPaused() || document.visibilityState !== 'hidden') return;
+        void openFloatRef.current('hide');
+      }, 180);
     };
-    document.addEventListener('visibilitychange', tryHide);
-    window.addEventListener('blur', tryHide);
-    window.addEventListener('pagehide', tryHide);
+    const onShow = () => {
+      window.clearTimeout(hideTimer);
+      if (document.visibilityState !== 'visible') return;
+      showTimer = window.setTimeout(() => {
+        if (document.visibilityState !== 'visible') return;
+        if (autoOpened.current) void closeFloatRef.current();
+      }, 180);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') onHide();
+      else onShow();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', onHide);
+    window.addEventListener('pageshow', onShow);
     return () => {
-      document.removeEventListener('visibilitychange', tryHide);
-      window.removeEventListener('blur', tryHide);
-      window.removeEventListener('pagehide', tryHide);
+      window.clearTimeout(hideTimer);
+      window.clearTimeout(showTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('pageshow', onShow);
     };
-  }, [autoFloat, openFloat]);
+  }, [autoFloat]);
 
   useEffect(() => {
     if (!winRef.current || winRef.current.closed) return;
-    fillPipWindow(winRef.current);
-  }, [people, micOn, camOn, hand, fillPipWindow]);
+    syncPipWindow(winRef.current);
+  }, [people, micOn, camOn, hand, syncPipWindow]);
 
   useEffect(() => {
     let frame = 0;
     const tick = () => {
       frame = requestAnimationFrame(tick);
-      paintFallback();
+      const pipEl = document.pictureInPictureElement;
+      if (pipEl && pipEl === pipVideoRef.current) paintFallback();
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
@@ -488,24 +601,6 @@ export function MeetingPip({
         disablePictureInPicture={false}
         aria-hidden="true"
       />
-      {gestureNeeded && !boardOpen && !panelOpen && (
-        <div className="banner info meet-float-prompt">
-          <span>Keep the meeting on screen when you switch tabs or apps.</span>
-          <button
-            type="button"
-            className="primary slim"
-            onClick={() => {
-              void openFloat(false);
-            }}
-          >
-            Enable floating window
-          </button>
-          <label className="check">
-            <input type="checkbox" checked={autoFloat} onChange={(event) => onAutoFloat(event.target.checked)} />
-            <span>Auto float when I switch tabs</span>
-          </label>
-        </div>
-      )}
       {bubbleNode ? createPortal(bubbleNode, document.body) : null}
     </>
   );
