@@ -982,6 +982,10 @@ html {
   background: transparent;
 }
 .preview video.mirror, .tile video.mirror, .fx-canvas.mirror { transform: scaleX(-1); }
+.local-slot video.mirror,
+.local-slot .fx-canvas.mirror {
+  transform: scaleX(-1) scale(var(--self-zoom, 1));
+}
 .fx-canvas { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 1; }
 video.fx-hidden { opacity: 0; }
 .lobby-panel {
@@ -1937,7 +1941,7 @@ video.fx-hidden { opacity: 0; }
   z-index: 2;
 }
 .room-meet .backdrop {
-  z-index: 50;
+  z-index: 70;
 }
 .room-meet .popover {
   z-index: 62;
@@ -3639,6 +3643,8 @@ kbd {
   overflow-x: hidden;
 }
 .room-meet .topbar {
+  position: relative;
+  z-index: 80;
   background: color-mix(in srgb, #1a2420 92%, transparent);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--line);
@@ -3680,14 +3686,16 @@ kbd {
 .room-meet .meet-network-pill.fair { color: #f9d67a; border-color: color-mix(in srgb, #f9ab00 35%, var(--line)); }
 .room-meet .meet-host-pill { background: var(--accent-soft); color: var(--accent-ink); }
 .room-meet .meet-host-short { display: none; }
-.meet-top-overflow { position: relative; flex-shrink: 0; }
+.meet-top-overflow { position: relative; flex-shrink: 0; z-index: 81; }
 .meet-top-overflow-pop {
   position: absolute;
   right: 0;
   top: calc(100% + 6px);
-  z-index: 36;
-  min-width: 180px;
-  max-width: min(240px, calc(100vw - 16px));
+  z-index: 82;
+  min-width: 196px;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: min(70dvh, 420px);
+  overflow: auto;
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--line);
@@ -4807,7 +4815,16 @@ html.is-native .hub-grid {
     box-shadow: none;
   }
   .room-meet .tile video,
-  .room-meet .tile canvas.fx-canvas {
+  .room-meet .tile canvas.fx-canvas,
+  .room-meet .local-slot video,
+  .room-meet .local-slot .fx-canvas {
+    object-fit: cover;
+  }
+  .room-meet .tile.has-blur-fill .tile-blur {
+    display: none;
+  }
+  .room-meet .tile.has-blur-fill video.fit-contain,
+  .room-meet .tile.has-blur-fill video.fit-cover {
     object-fit: cover;
   }
   .room-meet .grid.c2 {
@@ -6774,11 +6791,17 @@ html.is-native .room-meet .tile canvas.fx-canvas {
 }
 .meet-logo-btn:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
 .seg { flex-wrap: wrap; }
+.tile-frame-wrap {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
 .tile-frame-btn {
   position: absolute;
   top: 8px;
   left: 8px;
-  z-index: 3;
+  z-index: 5;
   min-height: 32px;
   padding: 4px 10px;
   border: 0;
@@ -6788,17 +6811,26 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   font-weight: 700;
   font-size: 12px;
   opacity: 0;
+  pointer-events: auto;
 }
 .tile:hover .tile-frame-btn,
 .tile:focus-within .tile-frame-btn,
 html.is-mobile .tile-frame-btn {
   opacity: 1;
 }
+.tile-frame-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  border: 0;
+  background: transparent;
+  pointer-events: auto;
+}
 .tile-frame-menu {
   position: absolute;
   top: 42px;
   left: 8px;
-  z-index: 5;
+  z-index: 6;
   display: grid;
   gap: 4px;
   min-width: 180px;
@@ -6808,6 +6840,7 @@ html.is-mobile .tile-frame-btn {
   color: var(--text);
   border: 1px solid var(--line);
   box-shadow: var(--shadow);
+  pointer-events: auto;
 }
 .tile-frame-menu button,
 .tile-frame-menu label {

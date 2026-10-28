@@ -29,6 +29,7 @@ import {
   Logo,
 } from './icons';
 import { LookMenu, ThemeButton } from './LookControls';
+import { useOutsideDismiss } from './ui';
 import { useSelfLook } from '../hooks/useSelfLook';
 import { loadRoomDisplayName, safeName } from '../lib/code';
 import type { MeetingSummaryData } from './MeetingSummary';
@@ -183,8 +184,9 @@ function gridClass(count: number) {
   return 'grid cols6';
 }
 
-function tileFitFor(frame: FramePrefs, key: string, portrait: boolean): TileFit {
+function tileFitFor(frame: FramePrefs, key: string, portrait: boolean, compact: boolean): TileFit {
   if (frame.fit[key]) return frame.fit[key];
+  if (compact) return 'cover';
   if (portrait) return 'contain';
   return frame.defaultFit;
 }
@@ -1420,8 +1422,9 @@ async function toggleRecord() {
             : coHostIds.includes(tile.peerId)
               ? 'Co-host'
               : 'Guest';
-    const portrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
-    const fit = tileFitFor(frame, tile.key, portrait);
+    const trackPortrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
+    const fit = tileFitFor(frame, tile.key, trackPortrait, viewportMobile);
+    const blurFill = trackPortrait && fit === 'contain' && !viewportMobile;
     return (
       <Tile
         key={tile.key}
@@ -1436,7 +1439,7 @@ async function toggleRecord() {
         slow={Boolean(slow)}
         trouble={Boolean(slow && connecting && tile.connection !== 'failed')}
         fit={fit}
-        portrait={portrait}
+        portrait={blurFill}
         selfZoom={tile.you ? (frame.centerMe ? faceEase.zoom : frame.selfZoom) : 1}
         selfPanX={tile.you ? (frame.centerMe ? faceEase.x : frame.selfPanX) : 0.5}
         selfPanY={tile.you ? (frame.centerMe ? faceEase.y : frame.selfPanY) : 0.5}
@@ -1732,7 +1735,10 @@ async function toggleRecord() {
               className={popover === 'top' ? 'top-icon on' : 'top-icon'}
               aria-label="More room actions"
               aria-expanded={popover === 'top'}
-              onClick={() => setPopover((value) => (value === 'top' ? null : 'top'))}
+              onClick={(event) => {
+                event.stopPropagation();
+                setPopover((value) => (value === 'top' ? null : 'top'));
+              }}
             >
               <IconMore />
             </button>
@@ -1747,21 +1753,57 @@ async function toggleRecord() {
                 >
                   Copy link
                 </button>
-                <button type="button" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}>
+                <button
+                  type="button"
+                  aria-pressed={layout === 'grid'}
+                  onClick={() => {
+                    setLayout('grid');
+                    setPopover(null);
+                  }}
+                >
                   Grid layout
                 </button>
-                <button type="button" aria-pressed={layout === 'speaker'} onClick={() => setLayout('speaker')}>
+                <button
+                  type="button"
+                  aria-pressed={layout === 'speaker'}
+                  onClick={() => {
+                    setLayout('speaker');
+                    setPopover(null);
+                  }}
+                >
                   Speaker layout
                 </button>
-                <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
+                <button
+                  type="button"
+                  aria-pressed={layout === 'sidebar'}
+                  onClick={() => {
+                    setLayout('sidebar');
+                    setPopover(null);
+                  }}
+                >
                   Sidebar layout
                 </button>
                 {(['auto', '16:9', '4:3', '1:1', '9:16'] as LayoutAspect[]).map((ratio) => (
-                  <button key={ratio} type="button" aria-pressed={frame.aspect === ratio} onClick={() => patchFrame({ aspect: ratio })}>
+                  <button
+                    key={ratio}
+                    type="button"
+                    aria-pressed={frame.aspect === ratio}
+                    onClick={() => {
+                      patchFrame({ aspect: ratio });
+                      setPopover(null);
+                    }}
+                  >
                     Frame {ratio === 'auto' ? 'auto' : ratio}
                   </button>
                 ))}
-                <button type="button" aria-pressed={frame.centerMe} onClick={() => patchFrame({ centerMe: !frame.centerMe })}>
+                <button
+                  type="button"
+                  aria-pressed={frame.centerMe}
+                  onClick={() => {
+                    patchFrame({ centerMe: !frame.centerMe });
+                    setPopover(null);
+                  }}
+                >
                   {frame.centerMe ? 'Center me on' : 'Center me'}
                 </button>
               </div>
@@ -2217,7 +2259,6 @@ async function toggleRecord() {
 
       {popover &&
         !dialog &&
-        popover !== 'top' &&
         !(viewportMobile && (popover === 'more' || popover === 'look')) && (
         <button type="button" className="backdrop" aria-label="Close menu" onClick={() => setPopover(null)} />
       )}
@@ -2996,6 +3037,10 @@ function Tile({
   const slotRef = useRef<HTMLDivElement>(null);
   const blurRef = useRef<HTMLVideoElement>(null);
   const [menu, setMenu] = useState(false);
+  const closeFrameMenu = useCallback(() => setMenu(false), []);
+  const frameMenuRef = useOutsideDismiss(() => {
+    if (menu) closeFrameMenu();
+  });
   const press = useRef(0);
   const localCamera = tile.you && tile.kind === 'camera';
   const cropStyle = {
@@ -3212,43 +3257,66 @@ function Tile({
         <IconPin />
         {pinned ? 'Unpin' : 'Pin'}
       </button>
-      <button
-        type="button"
-        className="tile-frame-btn"
-        aria-label="Frame this video"
-        onClick={(event) => {
-          event.stopPropagation();
-          setMenu((value) => !value);
-        }}
-      >
-        Frame
-      </button>
-      {menu && (
-        <div className="tile-frame-menu" role="menu">
-          <button type="button" onClick={() => onFit?.('contain')}>
-            Fit (show full frame)
-          </button>
-          <button type="button" onClick={() => onFit?.('cover')}>
-            Fill (crop to tile)
-          </button>
-          {onSelfCrop && (
-            <label>
-              Zoom
-              <input
-                type="range"
-                min={1}
-                max={2}
-                step={0.05}
-                value={selfZoom}
-                onChange={(event) => onSelfCrop(Number(event.target.value), selfPanX, selfPanY)}
-              />
-            </label>
-          )}
-          <button type="button" onClick={() => setMenu(false)}>
-            Close
-          </button>
-        </div>
-      )}
+      <div className="tile-frame-wrap" ref={frameMenuRef}>
+        <button
+          type="button"
+          className="tile-frame-btn"
+          aria-label="Frame this video"
+          aria-expanded={menu}
+          onClick={(event) => {
+            event.stopPropagation();
+            setMenu((value) => !value);
+          }}
+        >
+          Frame
+        </button>
+        {menu && (
+          <>
+            <button
+              type="button"
+              className="tile-frame-scrim"
+              aria-label="Close frame options"
+              onClick={() => setMenu(false)}
+            />
+            <div className="tile-frame-menu" role="menu">
+              <button
+                type="button"
+                onClick={() => {
+                  onFit?.('contain');
+                  setMenu(false);
+                }}
+              >
+                Fit (show full frame)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onFit?.('cover');
+                  setMenu(false);
+                }}
+              >
+                Fill (crop to tile)
+              </button>
+              {onSelfCrop && (
+                <label>
+                  Zoom
+                  <input
+                    type="range"
+                    min={1}
+                    max={2}
+                    step={0.05}
+                    value={selfZoom}
+                    onChange={(event) => onSelfCrop(Number(event.target.value), selfPanX, selfPanY)}
+                  />
+                </label>
+              )}
+              <button type="button" onClick={() => setMenu(false)}>
+                Close
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </article>
   );
 }
