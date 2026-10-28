@@ -39,7 +39,35 @@ export function isValidMeetingCode(raw: string) {
   return meetingCodePattern.test(formatCode(raw));
 }
 
+/** Allow letters, digits, spaces, and common punctuation. Digits must not be stripped. */
 export function safeName(name: string) {
-  const trimmed = name.trim().slice(0, 40);
-  return trimmed || 'Guest';
+  const cleaned = String(name || '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[^a-zA-Z0-9 .'_\-()&+,]/g, '')
+    .slice(0, 40)
+    .trim();
+  return cleaned || 'Guest';
+}
+
+/** Session-scoped display name for a room (never writes to account settings). */
+export function roomDisplayNameKey(code: string) {
+  return `lc-room-name:${formatCode(code)}`;
+}
+
+export function loadRoomDisplayName(code: string, fallback = '') {
+  try {
+    return safeName(sessionStorage.getItem(roomDisplayNameKey(code)) || fallback);
+  } catch {
+    return safeName(fallback);
+  }
+}
+
+export function saveRoomDisplayName(code: string, name: string) {
+  try {
+    sessionStorage.setItem(roomDisplayNameKey(code), safeName(name));
+  } catch {
+    /* private mode */
+  }
 }

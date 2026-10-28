@@ -1,4 +1,9 @@
 import { WebSocketServer } from 'ws';
+import {
+  endOpenMeetingsByCode,
+  endOpenMeetingsByCodeIfOlderThan,
+  listOpenMeetingCodes,
+} from './db.mjs';
 
 /** @type {import('http').Server | null} */
 let attachedServer = null;
@@ -11,6 +16,36 @@ const hosts = new Map();
 const admittedMemory = new Map();
 /** @type {Map<string, Set<string>>} */
 const coHosts = new Map();
+/** @type {Map<string, number>} */
+const roomLastActivity = new Map();
+
+const STALE_OPEN_MEETING_MS = 30 * 60 * 1000;
+let staleMeetingSweepStarted = false;
+
+function touchRoomActivity(room) {
+  roomLastActivity.set(room, Date.now());
+}
+
+function startStaleMeetingSweep() {
+  if (staleMeetingSweepStarted) return;
+  staleMeetingSweepStarted = true;
+  setInterval(() => {
+    const now = Date.now();
+    for (const code of listOpenMeetingCodes()) {
+      if (roomIsLive(code)) {
+        touchRoomActivity(code);
+        continue;
+      }
+      const last = roomLastActivity.get(code);
+      if (last && now - last > 2 * 60 * 60 * 1000) {
+        endOpenMeetingsByCode(code);
+        roomLastActivity.delete(code);
+        continue;
+      }
+      endOpenMeetingsByCodeIfOlderThan(code, STALE_OPEN_MEETING_MS);
+    }
+  }, 60_000);
+}
 
 /** True when a meeting code currently has at least one connected peer (usually the host). */
 export function roomIsLive(code) {
@@ -87,6 +122,8 @@ export function attachSignal(httpServer) {
   }
 
   function wipeRoom(room) {
+    endOpenMeetingsByCode(room);
+    roomLastActivity.delete(room);
     hosts.delete(room);
     rooms.delete(room);
     admittedMemory.delete(room);
@@ -174,6 +211,7 @@ export function attachSignal(httpServer) {
         peerId = String(msg.from || '').slice(0, 80);
         const name = String(msg.name || 'Guest').trim().slice(0, 40) || 'Guest';
         if (!room || !peerId) return;
+        touchRoomActivity(room);
         const map = roomMap(room);
         const previous = map.get(peerId);
         if (previous && previous.ws !== ws) {
@@ -323,6 +361,7 @@ export function attachSignal(httpServer) {
       for (const [id, member] of map) {
         if (id !== peerId && member.admitted && member.ws.readyState === 1) member.ws.send(raw);
       }
+      if (room) touchRoomActivity(room);
     });
 
     ws.on('close', () => {
@@ -370,4 +409,5 @@ export function attachSignal(httpServer) {
     }
   }, 20000);
   httpServer.on('close', () => clearInterval(ping));
+  startStaleMeetingSweep();
 }

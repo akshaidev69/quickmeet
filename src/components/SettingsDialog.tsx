@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LookChoices, ThemeButton } from './LookControls';
+import { loadFramePrefs, saveFramePrefs } from '../lib/framePrefs';
 import { deviceLabel, listDevices, type DeviceLists } from '../lib/media';
 import type { Settings } from '../types';
 
@@ -121,6 +122,14 @@ export function SettingsDialog({ settings, onChange, onClose, onRetry }: Props) 
             onChange={(event) => patch({ instantJoin: event.target.checked })}
           />
           <span>Skip the camera check and join immediately next time</span>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            defaultChecked={loadFramePrefs().autoFloat}
+            onChange={(event) => saveFramePrefs({ ...loadFramePrefs(), autoFloat: event.target.checked })}
+          />
+          <span>Auto float when I switch tabs</span>
         </label>
         {onRetry && (
           <button type="button" className="secondary" onClick={onRetry}>

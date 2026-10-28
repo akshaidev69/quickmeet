@@ -12,7 +12,7 @@ export type PromiseItem = {
 export type CatchUpEvent = {
   id: string;
   ts: number;
-  kind: 'join' | 'chat' | 'hand' | 'share' | 'poll' | 'note';
+  kind: 'join' | 'chat' | 'hand' | 'share' | 'poll' | 'note' | 'board';
   text: string;
 };
 

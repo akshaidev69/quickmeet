@@ -1,5 +1,6 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Logo } from './icons';
+import { joinWaitlist } from '../lib/api';
 import { formatCode, isValidMeetingCode } from '../lib/code';
 
 type Props = {
@@ -117,14 +118,42 @@ const trusts = [
 export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
   const [joinCode, setJoinCode] = useState('');
   const [joinError, setJoinError] = useState('');
+  const [navOpen, setNavOpen] = useState(false);
   const [faqOpen, setFaqOpen] = useState<number | null>(0);
+  const [waitlistPlan, setWaitlistPlan] = useState<string | null>(null);
+  const [waitEmail, setWaitEmail] = useState('');
+  const [waitStatus, setWaitStatus] = useState<'idle' | 'saving' | 'done' | 'error'>('idle');
+  const [waitMessage, setWaitMessage] = useState('');
   const start = signedIn ? onApp : onRegister;
+
+  useEffect(() => {
+    if (!navOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setNavOpen(false);
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [navOpen]);
+
+  async function submitWaitlist(event: FormEvent) {
+    event.preventDefault();
+    setWaitStatus('saving');
+    setWaitMessage('');
+    try {
+      const result = await joinWaitlist(waitEmail.trim());
+      setWaitStatus('done');
+      setWaitMessage(result.already ? "You're already on the list" : "You're on the list");
+    } catch (err) {
+      setWaitStatus('error');
+      setWaitMessage(err instanceof Error ? err.message : 'Could not save email');
+    }
+  }
 
   function onJoin(event: FormEvent) {
     event.preventDefault();
     const code = formatCode(joinCode);
     if (!isValidMeetingCode(code)) {
-      setJoinError('Enter a valid code (abc-defg-hij).');
+      setJoinError('Codes look like abc-defg-hij');
       return;
     }
     setJoinError('');
@@ -150,6 +179,15 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
           <a href="#pricing">Pricing</a>
           <a href="#faq">Help</a>
         </nav>
+        <button
+          type="button"
+          className="luma-burger"
+          aria-label={navOpen ? 'Close menu' : 'Open menu'}
+          aria-expanded={navOpen}
+          onClick={() => setNavOpen((open) => !open)}
+        >
+          <span />
+        </button>
         <div className="luma-nav-actions">
           {signedIn ? (
             <button type="button" className="luma-btn luma-btn-primary" onClick={onApp}>
@@ -167,6 +205,38 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
           )}
         </div>
       </header>
+      {navOpen && (
+        <>
+          <button type="button" className="luma-drawer-back" aria-label="Close menu" onClick={() => setNavOpen(false)} />
+          <nav className="luma-drawer" aria-label="Mobile">
+            <div className="luma-drawer-head">
+              <strong>LetsConnect</strong>
+              <button type="button" className="luma-linkbtn" onClick={() => setNavOpen(false)}>
+                Close
+              </button>
+            </div>
+            <a href="#how" onClick={() => setNavOpen(false)}>How it works</a>
+            <a href="#compare" onClick={() => setNavOpen(false)}>Why us</a>
+            <a href="#features" onClick={() => setNavOpen(false)}>Features</a>
+            <a href="#pricing" onClick={() => setNavOpen(false)}>Pricing</a>
+            <a href="#faq" onClick={() => setNavOpen(false)}>Help</a>
+            {signedIn ? (
+              <button type="button" className="luma-btn luma-btn-primary" onClick={onApp}>
+                Open app
+              </button>
+            ) : (
+              <>
+                <button type="button" className="luma-linkbtn" onClick={onLogin}>
+                  Log in
+                </button>
+                <button type="button" className="luma-btn luma-btn-primary" onClick={onRegister}>
+                  Get started
+                </button>
+              </>
+            )}
+          </nav>
+        </>
+      )}
 
       <section className="luma-hero">
         <div className="luma-hero-grid">
@@ -195,6 +265,7 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
                   setJoinCode(e.target.value);
                   if (joinError) setJoinError('');
                 }}
+                onBlur={() => setJoinError('')}
                 placeholder="Paste a meeting link or code"
                 autoComplete="off"
               />
@@ -361,13 +432,42 @@ export function MarketingPage({ onLogin, onRegister, onApp, signedIn }: Props) {
                   </li>
                 ))}
               </ul>
-              <button
-                type="button"
-                className={plan.featured ? 'luma-btn luma-btn-primary' : 'luma-btn luma-btn-quiet'}
-                onClick={plan.featured ? start : onRegister}
-              >
-                {plan.cta}
-              </button>
+              {plan.featured ? (
+                <button type="button" className="luma-btn luma-btn-primary" onClick={start}>
+                  {plan.cta}
+                </button>
+              ) : waitlistPlan === plan.name && waitStatus === 'done' ? (
+                <p className="luma-wait-done" role="status">
+                  {waitMessage || "You're on the list"}
+                </p>
+              ) : waitlistPlan === plan.name ? (
+                <form className="luma-wait-form" onSubmit={(event) => void submitWaitlist(event)}>
+                  <input
+                    type="email"
+                    required
+                    value={waitEmail}
+                    placeholder="you@company.com"
+                    aria-label={`${plan.name} waitlist email`}
+                    onChange={(event) => setWaitEmail(event.target.value)}
+                  />
+                  <button type="submit" className="luma-btn luma-btn-quiet" disabled={waitStatus === 'saving'}>
+                    {waitStatus === 'saving' ? 'Saving…' : 'Notify me'}
+                  </button>
+                  {waitMessage && waitStatus === 'error' && <p className="field-error">{waitMessage}</p>}
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  className="luma-btn luma-btn-quiet"
+                  onClick={() => {
+                    setWaitlistPlan(plan.name);
+                    setWaitStatus('idle');
+                    setWaitMessage('');
+                  }}
+                >
+                  {plan.cta}
+                </button>
+              )}
             </article>
           ))}
         </div>

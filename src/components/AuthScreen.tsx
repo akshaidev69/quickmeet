@@ -32,9 +32,11 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   const [nameError, setNameError] = useState('');
   const [emailError, setEmailError] = useState('');
   const [passwordError, setPasswordError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [formBusy, setFormBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [googleOn, setGoogleOn] = useState(firebaseConfigured());
   const pendingNative = useRef(false);
+  const googleLock = useRef(false);
 
   useEffect(() => {
     setNameError('');
@@ -59,7 +61,8 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       pendingNative.current = false;
       await closeExternalBrowser();
       if (authError || (!code && !idToken)) {
-        setBusy(false);
+        setGoogleBusy(false);
+        googleLock.current = false;
         setError(authError || 'Google sign-in was cancelled.');
         return;
       }
@@ -83,7 +86,8 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Google sign-in failed');
       } finally {
-        setBusy(false);
+        setGoogleBusy(false);
+        googleLock.current = false;
       }
     };
 
@@ -113,8 +117,8 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     setError('');
-    if (!validateFields()) return;
-    setBusy(true);
+    if (!validateFields() || formBusy || googleBusy) return;
+    setFormBusy(true);
     try {
       if (mode === 'register') await register(name, email, password);
       else await login(email, password);
@@ -127,13 +131,15 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       else if (field === 'name' || (/name/i.test(message) && /required/i.test(message))) setNameError(message);
       else setError(message);
     } finally {
-      setBusy(false);
+      setFormBusy(false);
     }
   }
 
   async function onGoogle() {
+    if (googleBusy || formBusy || googleLock.current) return;
     setError('');
-    setBusy(true);
+    googleLock.current = true;
+    setGoogleBusy(true);
     try {
       if (!firebaseConfigured()) {
         window.location.href = '/api/auth/google';
@@ -156,7 +162,9 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
       pendingNative.current = false;
       setError(err instanceof Error ? err.message : 'Google sign-in failed');
       console.error('Google sign-in failed', err);
-      setBusy(false);
+    } finally {
+      setGoogleBusy(false);
+      googleLock.current = false;
     }
   }
 
@@ -183,11 +191,11 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
         <button
           type="button"
           className={googleOn ? 'google-btn' : 'google-btn off'}
-          disabled={busy || !googleOn}
+          disabled={googleBusy || formBusy || !googleOn}
           onClick={() => void onGoogle()}
         >
-          <GoogleMark />
-          {busy ? 'Opening Google…' : googleOn ? 'Continue with Google' : 'Google sign-in loading…'}
+          {googleBusy ? <span className="auth-spinner" aria-hidden="true" /> : <GoogleMark />}
+          {googleBusy ? 'Opening Google…' : googleOn ? 'Continue with Google' : 'Google sign-in loading…'}
         </button>
         <p className="auth-hint">Sign in with your Google account to open your LetsConnect meetings.</p>
 
@@ -243,8 +251,17 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
             {passwordError && <p className="field-error">{passwordError}</p>}
           </label>
           {error && <p className="warn-text">{error}</p>}
-          <button type="submit" className="primary xl ask-join" disabled={busy}>
-            {busy ? 'Please wait…' : mode === 'login' ? 'Log in' : 'Create account'}
+          <button type="submit" className="primary xl ask-join auth-submit" disabled={formBusy || googleBusy}>
+            {formBusy ? (
+              <>
+                <span className="auth-spinner" aria-hidden="true" />
+                {mode === 'login' ? 'Signing in…' : 'Creating account…'}
+              </>
+            ) : mode === 'login' ? (
+              'Log in'
+            ) : (
+              'Create account'
+            )}
           </button>
         </form>
 

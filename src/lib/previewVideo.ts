@@ -33,7 +33,7 @@ export function mountPreview(
     recordInitials?: string;
   },
 ) {
-  preview.className = ['fit-contain', options.mirror ? 'mirror' : '', options.recordOff ? 'is-off' : '', options.conceal ? 'fx-hidden' : '']
+  preview.className = ['tile-main', options.mirror ? 'mirror' : '', options.recordOff ? 'is-off' : '', options.conceal ? 'fx-hidden' : '']
     .filter(Boolean)
     .join(' ');
   preview.dataset.recVideo = '1';

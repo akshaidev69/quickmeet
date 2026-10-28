@@ -5,8 +5,9 @@ import { HomeScreen } from './components/HomeScreen';
 import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
 import { MeetingScreen } from './components/MeetingScreen';
+import { MeetingSummary, type MeetingSummaryData } from './components/MeetingSummary';
 import { AuthProvider, useAuth } from './lib/auth';
-import { formatCode, isFullCode, isValidMeetingCode } from './lib/code';
+import { formatCode, isFullCode, isValidMeetingCode, meetingCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
 import { isNativeApp } from './lib/native';
@@ -22,9 +23,10 @@ import {
   saveSchedule,
   saveSettings,
 } from './lib/storage';
+// clearActiveRoom used on auth success so register never resumes a stale room
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'missing' | 'google-bridge';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
@@ -92,7 +94,9 @@ function AppRoutes() {
   const [code, setCode] = useState('');
   const [asHost, setAsHost] = useState(false);
   const [carry, setCarry] = useState<MediaStream | null>(null);
+  const [summary, setSummary] = useState<MeetingSummaryData | null>(null);
   const [boot, setBoot] = useState(true);
+  const [docked, setDocked] = useState(false);
 
   useEffect(() => {
     saveSettings(settings);
@@ -101,6 +105,13 @@ function AppRoutes() {
 
   useEffect(() => {
     void loadCustomBackground();
+  }, []);
+
+  useEffect(() => {
+    const ping = () => void fetch('/api/health', { cache: 'no-store' }).catch(() => undefined);
+    ping();
+    const id = window.setInterval(ping, 4 * 60 * 1000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -113,16 +124,33 @@ function AppRoutes() {
     setAsHost(hostFlag);
     setView(next.view);
     setBoot(false);
-    if (user && (location.pathname === '/login' || location.pathname === '/register')) {
-      navigate('/app', true);
+    const path = location.pathname.replace(/\/+$/, '') || '/';
+    if (user && (path === '/login' || path === '/register' || path === '/' || path === '')) {
+      if (path === '/' || path === '') {
+        if (!next.code) {
+          navigate('/app', true);
+          setCode('');
+          setAsHost(false);
+          setView('home');
+          setBoot(false);
+          return;
+        }
+      } else {
+        clearActiveRoom();
+        const url = new URL(location.href);
+        url.pathname = '/app';
+        url.searchParams.delete('room');
+        history.replaceState({ view: 'home' }, '', url);
+        setCode('');
+        setAsHost(false);
+        setView('home');
+        return;
+      }
     }
-    // Native APK always stays in the app routes ? never the marketing site.
+    // Native APK always stays in the app routes — never the marketing site.
     if (isNativeApp()) {
-      const path = location.pathname.replace(/\/+$/, '') || '/';
       if (!user && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge') {
         navigate('/login', true);
-      } else if (user && (path === '/' || path === '') && !next.code) {
-        navigate('/app', true);
       }
     }
   }, [loading, user, settings.instantJoin]);
@@ -190,7 +218,14 @@ function AppRoutes() {
   }
 
   function goApp() {
-    navigate('/app');
+    clearActiveRoom();
+    const url = new URL(location.href);
+    url.pathname = '/app';
+    url.searchParams.delete('room');
+    history.replaceState({ view: 'home' }, '', url);
+    setCarry(null);
+    setCode('');
+    setAsHost(false);
     setView('home');
   }
 
@@ -211,6 +246,10 @@ function AppRoutes() {
   }
 
   async function enter(nextCode: string, title: string, nextView: 'lobby' | 'room', role: 'host' | 'guest' = 'guest') {
+    if (docked) {
+      setDocked(false);
+      return;
+    }
     const formatted = formatCode(nextCode);
     const host = role === 'host';
     if (host) sessionStorage.setItem(`lc-host:${formatted}`, '1');
@@ -232,7 +271,8 @@ function AppRoutes() {
     setView(nextView);
   }
 
-  async function leave() {
+  async function leave(nextSummary?: MeetingSummaryData) {
+    setDocked(false);
     clearActiveRoom();
     if (code) {
       try {
@@ -244,11 +284,24 @@ function AppRoutes() {
     const url = new URL(location.href);
     url.pathname = '/app';
     url.searchParams.delete('room');
-    history.pushState({ view: 'home' }, '', url);
     setCarry(null);
     setCode('');
     setAsHost(false);
+    if (nextSummary) {
+      setSummary(nextSummary);
+      history.pushState({ view: 'summary' }, '', url);
+      setView('summary');
+      return;
+    }
+    setSummary(null);
+    history.pushState({ view: 'home' }, '', url);
     setView('home');
+  }
+
+  function startFreshMeeting() {
+    setSummary(null);
+    const next = meetingCode();
+    void enter(next, 'Instant meeting', settings.instantJoin ? 'room' : 'lobby', 'host');
   }
 
   function updateSchedule(items: ScheduledMeeting[]) {
@@ -319,9 +372,34 @@ function AppRoutes() {
     );
   }
 
+  if (screen === 'summary' && summary) {
+    const summaryCode = summary.code;
+    const summaryTitle = summary.title;
+    return (
+      <MeetingSummary
+        data={summary}
+        onDashboard={() => {
+          setSummary(null);
+          goApp();
+        }}
+        onNewMeeting={startFreshMeeting}
+        onRejoin={() => {
+          setSummary(null);
+          const host = sessionStorage.getItem(`lc-host:${summaryCode}`) === '1';
+          void enter(
+            summaryCode,
+            summaryTitle || 'LetsConnect meeting',
+            settings.instantJoin ? 'room' : 'lobby',
+            host ? 'host' : 'guest',
+          );
+        }}
+      />
+    );
+  }
+
   return (
     <>
-      {screen === 'home' && (
+      {(screen === 'home' || docked) && (
         <HomeScreen
           settings={settings}
           recent={recent}
@@ -332,6 +410,8 @@ function AppRoutes() {
           onEnter={enter}
           onLogout={() => void logout().then(afterLogout)}
           onMarketing={isNativeApp() ? goApp : goMarket}
+          inCallCode={docked ? code : undefined}
+          onReturnToCall={() => setDocked(false)}
         />
       )}
       {screen === 'lobby' && (
@@ -340,7 +420,7 @@ function AppRoutes() {
           asHost={asHost}
           settings={settings}
           onSettings={setSettings}
-          onBack={leave}
+          onBack={() => void leave()}
           onJoin={(stream) => {
             setCarry(stream);
             setView('room');
@@ -355,7 +435,10 @@ function AppRoutes() {
           settings={settings}
           initialStream={carry}
           onSettings={setSettings}
-          onLeave={() => void leave()}
+          onLeave={(next) => void leave(next)}
+          docked={docked}
+          onMinimize={() => setDocked(true)}
+          onRestore={() => setDocked(false)}
         />
       )}
     </>

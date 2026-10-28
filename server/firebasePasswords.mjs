@@ -13,13 +13,25 @@ function apiKey() {
 
 async function call(path, body) {
   const key = apiKey();
-  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/${path}?key=${encodeURIComponent(key)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json().catch(() => ({}));
-  return { ok: res.ok, status: res.status, data };
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
+  try {
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/${path}?key=${encodeURIComponent(key)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify(body),
+      signal: ac.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    return { ok: res.ok, status: res.status, data };
+  } catch (err) {
+    if (err && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+      return { ok: false, status: 504, data: { error: { message: 'TIMEOUT' } } };
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function disabled(code) {
@@ -54,7 +66,7 @@ export async function firebaseSignUp(email, password) {
     throw Object.assign(new Error('Password must be at least 8 characters.'), { status: 400 });
   }
   // Email/password provider off in Firebase console — caller should use local bcrypt store.
-  if (disabled(code)) return null;
+  if (disabled(code) || code.includes('TIMEOUT')) return null;
   throw Object.assign(new Error(data.error?.message || 'Could not create account.'), { status: 400 });
 }
 
@@ -76,6 +88,6 @@ export async function firebaseSignIn(email, password) {
   if (code.includes('EMAIL_NOT_FOUND') || code.includes('INVALID_PASSWORD') || code.includes('INVALID_LOGIN_CREDENTIALS')) {
     return null;
   }
-  if (disabled(code)) return null;
+  if (disabled(code) || code.includes('TIMEOUT')) return null;
   throw Object.assign(new Error(data.error?.message || 'Could not sign in.'), { status: 400 });
 }

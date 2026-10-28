@@ -1,6 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  applySnapshot,
+  emptyBoardMeta,
+  mergeMeta,
+  mergeObject,
+  visibleObjects,
+  type BoardCursor,
+  type BoardMeta,
+  type BoardObject,
+  type BoardPoint,
+  type BoardSnapshot,
+} from '../lib/board';
+import { colorFor } from '../lib/people';
 import { safeName, uid } from '../lib/code';
-import type { ChatMessage, PeerInfo, Poll, RecordCastSignal, Signal, WaitingPerson } from '../types';
+import type { ChatAttachment, ChatMessage, PeerInfo, Poll, RecordCastSignal, Signal, WaitingPerson } from '../types';
 
 export type RemotePeer = PeerInfo & {
   connection: RTCPeerConnectionState | 'new';
@@ -26,6 +39,7 @@ type Options = {
   claimHost?: boolean;
   onForceMute?: (kind: 'mic' | 'cam') => void;
   onHostCast?: (cast: RecordCastSignal, active: boolean) => void;
+  onMeetingEnded?: () => void;
 };
 
 function stablePeerId(code: string) {
@@ -63,7 +77,9 @@ type RoomApi = {
   publish: () => void;
   setStream: (stream: MediaStream | null) => void;
   setScreenTrack: (stream: MediaStream | null) => void;
-  sendChat: (text: string) => void;
+  sendChat: (text: string, attachment?: ChatAttachment) => void;
+  endMeeting: () => void;
+  setMeetingLock: (locked: boolean) => void;
   sendReaction: (emoji: string) => void;
   sendCaption: (text: string) => void;
   kick: (id: string) => void;
@@ -76,17 +92,37 @@ type RoomApi = {
   setCohost: (id: string, on: boolean) => void;
   publishCast: (cast: RecordCastSignal, active: boolean) => void;
   rename: (name: string) => void;
+  sendBoardOp: (object: BoardObject) => void;
+  sendBoardLive: (payload: { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number; done?: boolean }) => void;
+  sendBoardCursor: (x: number, y: number) => void;
+  sendBoardMeta: (meta: BoardMeta) => void;
+  sendBoardSync: (to?: string) => void;
 };
 
-const iceServers: RTCIceServer[] = [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
-  // Open relay TURN so guests behind strict NAT / no-camera peers can still connect.
-  {
-    urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443'],
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-];
+function buildIceServers(): RTCIceServer[] {
+  const servers: RTCIceServer[] = [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  ];
+  const turnUrls = (import.meta.env.VITE_TURN_URLS || '')
+    .split(',')
+    .map((item: string) => item.trim())
+    .filter(Boolean);
+  const turnUser = String(import.meta.env.VITE_TURN_USERNAME || '');
+  const turnPass = String(import.meta.env.VITE_TURN_CREDENTIAL || '');
+  if (turnUrls.length && turnUser && turnPass) {
+    servers.push({ urls: turnUrls, username: turnUser, credential: turnPass });
+  } else {
+    // Public openrelay fallback so guests behind strict NAT / no-camera peers can still connect.
+    servers.push({
+      urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    });
+  }
+  return servers;
+}
+
+const iceServers = buildIceServers();
 
 function tuneCameraTrack(track: MediaStreamTrack | null) {
   if (!track) return;
@@ -159,6 +195,12 @@ export function useRoom(options: Options) {
   const [ask, setAsk] = useState<Ask>(null);
   const [poll, setPoll] = useState<Poll | null>(null);
   const [hostCastActive, setHostCastActive] = useState(false);
+  const [meetingLocked, setMeetingLocked] = useState(false);
+  const [boardTick, setBoardTick] = useState(0);
+  const boardObjectsRef = useRef(new Map<string, BoardObject>());
+  const boardMetaRef = useRef(emptyBoardMeta());
+  const boardLiveRef = useRef<Record<string, { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number }>>({});
+  const boardCursorsRef = useRef<Record<string, BoardCursor>>({});
 
   const nameRef = useRef(options.name);
   const micRef = useRef(options.micOn);
@@ -172,6 +214,7 @@ export function useRoom(options: Options) {
   const pollRef = useRef(poll);
   const onForceMuteRef = useRef(options.onForceMute);
   const onHostCastRef = useRef(options.onHostCast);
+  const onMeetingEndedRef = useRef(options.onMeetingEnded);
   const admittedRef = useRef(false);
   const apiRef = useRef<RoomApi | null>(null);
   const mediaRef = useRef(new Map<string, Bucket>());
@@ -187,10 +230,11 @@ export function useRoom(options: Options) {
   pollRef.current = poll;
   onForceMuteRef.current = options.onForceMute;
   onHostCastRef.current = options.onHostCast;
+  onMeetingEndedRef.current = options.onMeetingEnded;
 
   const addChat = useCallback((messages: ChatMessage[]) => {
     const ids = new Set(historyRef.current.map((item) => item.id));
-    const fresh = messages.filter((item) => item.text && !ids.has(item.id));
+    const fresh = messages.filter((item) => (item.text || item.attachment) && !ids.has(item.id));
     if (!fresh.length) return;
     historyRef.current = [...historyRef.current, ...fresh].sort((a, b) => a.ts - b.ts).slice(-300);
     setChat(historyRef.current);
@@ -535,6 +579,10 @@ export function useRoom(options: Options) {
             peer: selfInfo(),
             chat: historyRef.current.filter((item) => !item.system).slice(-50),
             poll: pollRef.current,
+            board: {
+              objects: [...boardObjectsRef.current.values()],
+              meta: boardMetaRef.current,
+            },
           });
         }
         return;
@@ -548,6 +596,7 @@ export function useRoom(options: Options) {
             return { ...payload.poll, votes: { ...payload.poll.votes, ...current.votes } };
           });
         }
+        if (payload.board) applyBoardSnapshot(payload.board);
         return;
       }
       if (payload.type === 'chat') {
@@ -581,6 +630,27 @@ export function useRoom(options: Options) {
             return next;
           });
         }
+        return;
+      }
+      if (payload.type === 'end-meeting') {
+        dead = true;
+        if (!closed) {
+          const hostName = peersRef.current[payload.from]?.name || 'The host';
+          addChat([systemNote(`${hostName} ended the meeting for everyone.`)]);
+        }
+        for (const conn of conns.values()) conn.pc.close();
+        conns.clear();
+        mediaRef.current.clear();
+        try {
+          socket?.close();
+        } catch {
+          /* ignore */
+        }
+        onMeetingEndedRef.current?.();
+        return;
+      }
+      if (payload.type === 'meeting-lock') {
+        if (!closed) setMeetingLocked(Boolean(payload.locked));
         return;
       }
       if (payload.type === 'reset') {
@@ -632,7 +702,70 @@ export function useRoom(options: Options) {
         if (closed) return;
         setHostCastActive(payload.active);
         onHostCastRef.current?.(payload.cast, payload.active);
+        return;
       }
+      if (payload.type === 'board-op') {
+        const next = mergeObject(boardObjectsRef.current.get(payload.object.id), payload.object);
+        boardObjectsRef.current.set(payload.object.id, next);
+        if (payload.object.src) {
+          /* image already in object */
+        }
+        bumpBoard();
+        return;
+      }
+      if (payload.type === 'board-live') {
+        if (payload.done) {
+          const next = { ...boardLiveRef.current };
+          delete next[payload.from];
+          boardLiveRef.current = next;
+        } else {
+          boardLiveRef.current = {
+            ...boardLiveRef.current,
+            [payload.from]: {
+              id: payload.id,
+              points: payload.points,
+              color: payload.color,
+              size: payload.size,
+              opacity: payload.opacity,
+            },
+          };
+        }
+        bumpBoard();
+        return;
+      }
+      if (payload.type === 'board-cursor') {
+        boardCursorsRef.current = {
+          ...boardCursorsRef.current,
+          [payload.from]: {
+            id: payload.from,
+            name: payload.name,
+            color: payload.color,
+            x: payload.x,
+            y: payload.y,
+            ts: Date.now(),
+          },
+        };
+        bumpBoard();
+        return;
+      }
+      if (payload.type === 'board-meta') {
+        boardMetaRef.current = mergeMeta(boardMetaRef.current, payload.meta);
+        bumpBoard();
+        return;
+      }
+      if (payload.type === 'board-sync') {
+        applyBoardSnapshot(payload.snapshot);
+      }
+    };
+
+    const applyBoardSnapshot = (snapshot: BoardSnapshot) => {
+      applySnapshot(boardObjectsRef.current, snapshot);
+      boardMetaRef.current = mergeMeta(boardMetaRef.current, snapshot.meta);
+      bumpBoard();
+    };
+
+    const bumpBoard = () => {
+      if (!closed) setBoardTick((value) => value + 1);
     };
 
     const enterMeeting = () => {
@@ -762,17 +895,24 @@ export function useRoom(options: Options) {
           if (audio && next && audio.readyState === 'live') conn.screenAudioSender = conn.pc.addTrack(audio, next);
         }
       },
-      sendChat: (text) => {
+      sendChat: (text, attachment) => {
+        const clean = text.trim().slice(0, 2000);
+        if (!clean && !attachment) return;
         const message: ChatMessage = {
           id: uid(),
           from: peerId,
           name: safeName(nameRef.current),
-          text: text.trim().slice(0, 2000),
+          text: clean || (attachment ? `Shared ${attachment.name}` : ''),
           ts: Date.now(),
+          attachment,
         };
-        if (!message.text) return;
         addChat([message]);
         send({ type: 'chat', from: peerId, message });
+      },
+      endMeeting: () => send({ type: 'end-meeting', from: peerId }),
+      setMeetingLock: (locked) => {
+        setMeetingLocked(locked);
+        send({ type: 'meeting-lock', from: peerId, locked });
       },
       sendReaction: (emoji) => {
         const id = uid();
@@ -789,8 +929,22 @@ export function useRoom(options: Options) {
       kick: (id) => control('eject', id),
       moderate: (id, action) => send({ type: 'moderate', from: peerId, to: id, action }),
       retry: (id) => {
+        const existing = conns.get(id);
+        if (existing) {
+          try {
+            void existing.pc.restartIce?.();
+          } catch {
+            /* older browsers */
+          }
+        }
         ensureConn(id, true);
         send({ type: 'reset', from: peerId, to: id });
+        try {
+          const conn = conns.get(id);
+          if (conn) void sendDescription(conn, id);
+        } catch {
+          /* ignore */
+        }
       },
       sendPoll: (next) => send({ type: 'poll', from: peerId, poll: next }),
       sendVote: (pollId, option) => send({ type: 'vote', from: peerId, pollId, option }),
@@ -810,6 +964,38 @@ export function useRoom(options: Options) {
           socket.send(JSON.stringify({ kind: 'rename', name: safeName(nextName) }));
         }
       },
+      sendBoardOp: (object) => {
+        const next = mergeObject(boardObjectsRef.current.get(object.id), object);
+        boardObjectsRef.current.set(object.id, next);
+        bumpBoard();
+        send({ type: 'board-op', from: peerId, object: next });
+      },
+      sendBoardLive: (payload) => {
+        send({ type: 'board-live', from: peerId, ...payload });
+      },
+      sendBoardCursor: (x, y) => {
+        send({
+          type: 'board-cursor',
+          from: peerId,
+          name: safeName(nameRef.current),
+          color: colorFor(safeName(nameRef.current)),
+          x,
+          y,
+        });
+      },
+      sendBoardMeta: (meta) => {
+        boardMetaRef.current = mergeMeta(boardMetaRef.current, meta);
+        bumpBoard();
+        send({ type: 'board-meta', from: peerId, meta: boardMetaRef.current });
+      },
+      sendBoardSync: (to) => {
+        send({
+          type: 'board-sync',
+          from: peerId,
+          to,
+          snapshot: { objects: [...boardObjectsRef.current.values()], meta: boardMetaRef.current },
+        });
+      },
     };
 
     const sendLeave = () => {
@@ -823,12 +1009,10 @@ export function useRoom(options: Options) {
     };
 
     const onPageHide = () => sendLeave();
-    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('beforeunload', onPageHide);
 
     connect();
     return () => {
-      window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('beforeunload', onPageHide);
       sendLeave();
       closed = true;
@@ -921,7 +1105,12 @@ export function useRoom(options: Options) {
       });
   }, [connState, mediaTick, peers]);
 
-  const sendChat = useCallback((text: string) => apiRef.current?.sendChat(text), []);
+  const sendChat = useCallback(
+    (text: string, attachment?: ChatAttachment) => apiRef.current?.sendChat(text, attachment),
+    [],
+  );
+  const endMeeting = useCallback(() => apiRef.current?.endMeeting(), []);
+  const setMeetingLock = useCallback((locked: boolean) => apiRef.current?.setMeetingLock(locked), []);
   const sendReaction = useCallback((emoji: string) => apiRef.current?.sendReaction(emoji), []);
   const sendCaption = useCallback((text: string) => apiRef.current?.sendCaption(text), []);
   const kick = useCallback((id: string) => apiRef.current?.kick(id), []);
@@ -938,6 +1127,14 @@ export function useRoom(options: Options) {
     (cast: RecordCastSignal, active: boolean) => apiRef.current?.publishCast(cast, active),
     [],
   );
+  const sendBoardOp = useCallback((object: BoardObject) => apiRef.current?.sendBoardOp(object), []);
+  const sendBoardLive = useCallback(
+    (payload: { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number; done?: boolean }) =>
+      apiRef.current?.sendBoardLive(payload),
+    [],
+  );
+  const sendBoardCursor = useCallback((x: number, y: number) => apiRef.current?.sendBoardCursor(x, y), []);
+  const sendBoardMeta = useCallback((meta: BoardMeta) => apiRef.current?.sendBoardMeta(meta), []);
   const dismissAsk = useCallback(() => setAsk(null), []);
 
   const createPoll = useCallback(
@@ -991,8 +1188,11 @@ export function useRoom(options: Options) {
     ask,
     poll,
     hostCastActive,
+    meetingLocked,
     dismissAsk,
     sendChat,
+    endMeeting,
+    setMeetingLock,
     sendReaction,
     sendCaption,
     kick,
@@ -1006,5 +1206,14 @@ export function useRoom(options: Options) {
     createPoll,
     vote,
     endPoll,
+    boardObjects: visibleObjects(boardObjectsRef.current),
+    boardMeta: boardMetaRef.current,
+    boardLive: Object.values(boardLiveRef.current),
+    boardCursors: Object.values(boardCursorsRef.current).filter((cursor) => Date.now() - cursor.ts < 4000),
+    sendBoardOp,
+    sendBoardLive,
+    sendBoardCursor,
+    sendBoardMeta,
+    boardTick,
   };
 }

@@ -139,6 +139,15 @@ export function IconMore() {
   );
 }
 
+export function IconCatchUp() {
+  return (
+    <Svg>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 8v4.5l2.5 1.5" />
+    </Svg>
+  );
+}
+
 export function IconLeave() {
   return (
     <Svg>
@@ -155,6 +164,24 @@ export function IconLook() {
       <rect x="3" y="4" width="18" height="16" rx="2" />
       <circle cx="12" cy="10" r="2.2" />
       <path d="M8.2 16.2c.7-1.8 2.1-2.7 3.8-2.7s3.1.9 3.8 2.7" />
+    </Svg>
+  );
+}
+
+export function IconShield() {
+  return (
+    <Svg>
+      <path d="M12 3 4 6v6c0 5 3.4 8.6 8 9 4.6-.4 8-4 8-9V6l-8-3z" />
+      <path d="M9.5 12 11 13.5 14.5 10" />
+    </Svg>
+  );
+}
+
+export function IconSettings() {
+  return (
+    <Svg>
+      <circle cx="12" cy="12" r="2.5" />
+      <path d="M12 2v2M12 20v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M2 12h2M20 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" />
     </Svg>
   );
 }

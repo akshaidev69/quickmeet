@@ -35,7 +35,7 @@ function apiExtras() {
       return;
     }
 
-    if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth') && !pathname.startsWith('/api/meetings') && pathname !== '/api/config' && pathname !== '/api/network') {
+    if (pathname.startsWith('/api/') && !pathname.startsWith('/api/auth') && !pathname.startsWith('/api/meetings') && pathname !== '/api/config' && pathname !== '/api/waitlist' && pathname !== '/api/network') {
       // Let auth middleware / vite handle known routes; 404 unknown API later via auth miss.
       if (!['/api/health'].includes(pathname)) {
         /* fall through — authMiddleware handles /api/auth and /api/meetings */

@@ -1,9 +1,9 @@
-import { useEffect, useState, type FormEvent } from 'react';
-import { ThemeButton } from './LookControls';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Logo } from './icons';
 import { useAuth } from '../lib/auth';
 import { fetchMeetings, removeMeeting, type SavedMeeting } from '../lib/api';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode, safeName, uid } from '../lib/code';
+import { formatDurationLabel, formatMeetingDayKey, formatMeetingWhen } from '../lib/formatTime';
 import { isNativeApp } from '../lib/native';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
 
@@ -17,23 +17,71 @@ type Props = {
   onEnter: (code: string, title: string, view: 'lobby' | 'room', role?: 'host' | 'guest') => void;
   onLogout: () => void;
   onMarketing: () => void;
+  inCallCode?: string;
+  onReturnToCall?: () => void;
 };
 
-function whenLabel(ts: number) {
-  return new Date(ts).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+type NavTab = 'home' | 'meetings' | 'recordings' | 'followups' | 'profile';
+type RecentFilter = 'all' | 'hosted' | 'joined';
+type MeetingStatus = 'live' | 'progress' | 'ended' | 'scheduled';
+
+type DashRow = {
+  id: string;
+  code: string;
+  title: string;
+  subtitle: string;
+  status: MeetingStatus;
+  hosted: boolean;
+  cloudId?: string;
+  scheduleId?: string;
+  recentOnly?: boolean;
+};
+
+function whenLabel(ts: number | string) {
+  return formatMeetingWhen(ts);
 }
 
-function formatDuration(ms: number) {
-  if (!ms) return 'In progress';
-  const total = Math.round(ms / 1000);
-  const m = Math.floor(total / 60);
-  const s = total % 60;
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+function formatDuration(ms: number, endedAt?: number | null) {
+  return formatDurationLabel(ms, endedAt);
+}
+
+function loadFollowUps(): string[] {
+  const keys = ['LetsConnect.followUps', 'LetsConnect.followups', 'LetsConnect.promises'];
+  for (const key of keys) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+      }
+      if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { items?: unknown[] }).items)) {
+        return (parsed as { items: unknown[] }).items.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return [];
+}
+
+function wasHosted(code: string, scheduleCodes: Set<string>) {
+  const formatted = formatCode(code);
+  if (scheduleCodes.has(formatted)) return true;
+  try {
+    return sessionStorage.getItem(`lc-host:${formatted}`) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function statusLabel(status: MeetingStatus) {
+  if (status === 'live') return 'Live';
+  if (status === 'progress') return 'In progress';
+  if (status === 'scheduled') return 'Scheduled';
+  return 'Ended';
 }
 
 export function HomeScreen({
@@ -46,6 +94,8 @@ export function HomeScreen({
   onEnter,
   onLogout,
   onMarketing,
+  inCallCode,
+  onReturnToCall,
 }: Props) {
   const { user } = useAuth();
   const native = isNativeApp();
@@ -54,46 +104,151 @@ export function HomeScreen({
   const [planning, setPlanning] = useState(false);
   const [title, setTitle] = useState('');
   const [when, setWhen] = useState('');
+  const [titleError, setTitleError] = useState('');
+  const [whenError, setWhenError] = useState('');
+  const menuRef = useRef<HTMLDivElement>(null);
+  const avatarRef = useRef<HTMLButtonElement>(null);
   const [wifiUrls, setWifiUrls] = useState<string[]>([]);
   const [copiedUrl, setCopiedUrl] = useState('');
   const [cloud, setCloud] = useState<SavedMeeting[]>([]);
-  const [tab, setTab] = useState<'meetings' | 'scheduled' | 'recent'>('meetings');
   const [menuOpen, setMenuOpen] = useState(false);
-  const [showAllMeetings, setShowAllMeetings] = useState(false);
+  const [navTab, setNavTab] = useState<NavTab>('home');
+  const [recentFilter, setRecentFilter] = useState<RecentFilter>('all');
   const [showAllRecent, setShowAllRecent] = useState(false);
-  const LIST_PREVIEW = 4;
-  const firstName = user?.name?.split(' ')[0] || '';
+  const [followUps, setFollowUps] = useState<string[]>(() => loadFollowUps());
+
+  const upcomingRef = useRef<HTMLElement>(null);
+  const recentRef = useRef<HTMLElement>(null);
+  const followRef = useRef<HTMLElement>(null);
+  const recordingsRef = useRef<HTMLElement>(null);
+  const recordingsSideRef = useRef<HTMLElement>(null);
+
+  const LIST_PREVIEW = 5;
+  const greetName = safeName(user?.name || settings.name);
+  const firstName = greetName.split(' ').slice(0, 2).join(' ');
   const greeting = (() => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';
     if (hour < 18) return 'Good afternoon';
     return 'Good evening';
   })();
+
   const today = new Date();
-  const todayLabel = today.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-  const weekDays = (() => {
+  const todayKey = formatMeetingDayKey(today);
+  const [selectedDay, setSelectedDay] = useState(() => todayKey);
+
+  const scheduleCodes = useMemo(() => new Set(schedule.map((item) => formatCode(item.code))), [schedule]);
+
+  const weekDays = useMemo(() => {
     const start = new Date(today);
+    start.setHours(12, 0, 0, 0);
     start.setDate(today.getDate() - today.getDay());
     return Array.from({ length: 7 }, (_, index) => {
       const day = new Date(start);
       day.setDate(start.getDate() + index);
+      const key = formatMeetingDayKey(day);
+      const scheduled = schedule.filter((item) => item.when && formatMeetingDayKey(item.when) === key).length;
+      const live = cloud.filter((item) => !item.endedAt && formatMeetingDayKey(item.startedAt) === key).length;
       return {
-        key: day.toISOString().slice(0, 10),
+        key,
         label: day.toLocaleDateString(undefined, { weekday: 'short' }).slice(0, 3).toUpperCase(),
         date: day.getDate(),
         isToday: day.toDateString() === today.toDateString(),
+        count: scheduled,
+        live,
       };
     });
-  })();
-  const todaysMeetings = schedule.filter((item) => {
-    if (!item.when) return false;
-    const when = new Date(item.when);
-    return when.toDateString() === today.toDateString();
-  });
-  const hasToday = todaysMeetings.length > 0 || cloud.some((item) => {
-    const started = new Date(item.startedAt);
-    return started.toDateString() === today.toDateString() && !item.endedAt;
-  });
+  }, [cloud, schedule, today]);
+
+  const meetingsToday = useMemo(
+    () => schedule.filter((item) => item.when && formatMeetingDayKey(item.when) === todayKey).length,
+    [schedule, todayKey],
+  );
+
+  const daySchedule = useMemo(
+    () =>
+      schedule
+        .filter((item) => item.when && formatMeetingDayKey(item.when) === selectedDay)
+        .sort((a, b) => new Date(a.when).getTime() - new Date(b.when).getTime()),
+    [schedule, selectedDay],
+  );
+
+  const dayCloud = useMemo(
+    () => cloud.filter((item) => formatMeetingDayKey(item.startedAt) === selectedDay),
+    [cloud, selectedDay],
+  );
+
+  const selectedDayLabel = useMemo(() => {
+    const match = weekDays.find((day) => day.key === selectedDay);
+    if (!match) return 'Selected day';
+    if (match.isToday) return 'Today';
+    return `${match.label} ${match.date}`;
+  }, [selectedDay, weekDays]);
+
+  const dashRows = useMemo(() => {
+    const byCode = new Map<string, DashRow>();
+
+    for (const item of schedule) {
+      const formatted = formatCode(item.code);
+      byCode.set(formatted, {
+        id: `sched-${item.id}`,
+        code: formatted,
+        title: item.title,
+        subtitle: item.when ? whenLabel(item.when) : 'No time set',
+        status: 'scheduled',
+        hosted: true,
+        scheduleId: item.id,
+      });
+    }
+
+    for (const item of cloud) {
+      const formatted = formatCode(item.code);
+      const status: MeetingStatus = item.endedAt ? 'ended' : item.durationMs > 0 ? 'progress' : 'live';
+      const duration = formatDuration(item.durationMs, item.endedAt);
+      byCode.set(formatted, {
+        id: `cloud-${item.id}`,
+        code: formatted,
+        title: item.title,
+        subtitle:
+          duration && duration !== 'Ended'
+            ? `${whenLabel(item.startedAt)} · ${duration}`
+            : whenLabel(item.startedAt),
+        status,
+        hosted: wasHosted(formatted, scheduleCodes),
+        cloudId: item.id,
+      });
+    }
+
+    for (const item of recent) {
+      const formatted = formatCode(item.code);
+      if (byCode.has(formatted)) continue;
+      byCode.set(formatted, {
+        id: `recent-${formatted}`,
+        code: formatted,
+        title: item.title,
+        subtitle: whenLabel(item.ts),
+        status: 'ended',
+        hosted: wasHosted(formatted, scheduleCodes),
+        recentOnly: true,
+      });
+    }
+
+    return [...byCode.values()].sort((a, b) => {
+      const rank = (s: MeetingStatus) => (s === 'live' ? 0 : s === 'progress' ? 1 : s === 'scheduled' ? 2 : 3);
+      const diff = rank(a.status) - rank(b.status);
+      if (diff !== 0) return diff;
+      return a.title.localeCompare(b.title);
+    });
+  }, [cloud, recent, schedule, scheduleCodes]);
+
+  const filteredRecent = useMemo(() => {
+    let rows = dashRows;
+    if (recentFilter === 'hosted') rows = rows.filter((row) => row.hosted);
+    if (recentFilter === 'joined') rows = rows.filter((row) => !row.hosted);
+    return rows;
+  }, [dashRows, recentFilter]);
+
+  const recentVisible = showAllRecent ? filteredRecent : filteredRecent.slice(0, LIST_PREVIEW);
 
   useEffect(() => {
     if (user?.name && !settings.name.trim()) {
@@ -113,6 +268,28 @@ export function HomeScreen({
       cancel = true;
     };
   }, []);
+
+  useEffect(() => {
+    setFollowUps(loadFollowUps());
+  }, [cloud.length, recent.length]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === 'Escape') setMenuOpen(false);
+    }
+    function onPointer(event: PointerEvent) {
+      const node = event.target as Node | null;
+      if (menuRef.current?.contains(node) || avatarRef.current?.contains(node)) return;
+      setMenuOpen(false);
+    }
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, [menuOpen]);
 
   useEffect(() => {
     if (native) return;
@@ -140,6 +317,7 @@ export function HomeScreen({
   }
 
   function start() {
+    setJoinError('');
     const next = meetingCode();
     onEnter(next, 'Instant meeting', settings.instantJoin ? 'room' : 'lobby', 'host');
   }
@@ -147,14 +325,14 @@ export function HomeScreen({
   async function join(nextCode: string, label: string, role: 'host' | 'guest' = 'guest') {
     const formatted = formatCode(nextCode);
     if (!isFullCode(formatted) || !isValidMeetingCode(formatted)) {
-      setJoinError('Enter a valid meeting code (abc-defg-hij).');
+      setJoinError('Enter a valid meeting code');
       return;
     }
     if (role === 'guest') {
       try {
         const res = await fetch(`/api/rooms/${encodeURIComponent(formatted)}`);
         if (res.status === 404) {
-          setJoinError('Meeting not found. Check the code and try again.');
+          setJoinError('Meeting not found or has ended');
           return;
         }
       } catch {
@@ -167,16 +345,29 @@ export function HomeScreen({
 
   function createScheduled(event: FormEvent) {
     event.preventDefault();
+    const nextTitle = title.trim();
+    const titleMsg = nextTitle ? '' : 'Title is required';
+    const whenMsg = when ? '' : 'Date and time are required';
+    setTitleError(titleMsg);
+    setWhenError(whenMsg);
+    if (titleMsg || whenMsg) return;
+    const local = new Date(when);
+    if (Number.isNaN(local.getTime())) {
+      setWhenError('Enter a valid date and time');
+      return;
+    }
     const next: ScheduledMeeting = {
       id: uid(),
-      title: title.trim().slice(0, 60) || 'Scheduled meeting',
-      when,
+      title: nextTitle.slice(0, 60),
+      when: local.toISOString(),
       code: meetingCode(),
     };
     onSchedule([next, ...schedule].slice(0, 12));
     setPlanning(false);
     setTitle('');
     setWhen('');
+    setTitleError('');
+    setWhenError('');
   }
 
   async function forgetCloud(id: string) {
@@ -188,319 +379,585 @@ export function HomeScreen({
     }
   }
 
-  const cloudVisible = showAllMeetings ? cloud : cloud.slice(0, LIST_PREVIEW);
-  const recentVisible = showAllRecent ? recent : recent.slice(0, LIST_PREVIEW);
+  function scrollToNav(tab: NavTab) {
+    setNavTab(tab);
+    if (tab === 'profile') {
+      setMenuOpen(true);
+      return;
+    }
+    if (tab === 'home') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    const target =
+      tab === 'meetings'
+        ? upcomingRef.current
+        : tab === 'followups'
+          ? followRef.current
+          : tab === 'recordings'
+            ? recordingsSideRef.current ?? recordingsRef.current
+            : null;
+    target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
-  const list = (
-    <aside className="side-col hub-side">
-      <section className={`hub-panel hub-panel-meetings${tab !== 'meetings' ? ' phone-hide' : ''}`}>
-        <div className="hub-panel-head">
-          <h2>Your meetings</h2>
-          <span>{cloud.length}</span>
-        </div>
-        <p className="hint desk-only">Synced to your account {'\u2014'} not just this browser.</p>
-        {cloud.length === 0 && <p className="empty">Start or join a meeting to fill this list.</p>}
-        <ul className="list hub-list">
-          {cloudVisible.map((item) => (
-            <li key={item.id}>
-              <div>
-                <strong>{item.title}</strong>
-                <span>
-                  {whenLabel(item.startedAt)} {'\u00b7'} {formatDuration(item.durationMs)}
-                </span>
-                <code>{item.code}</code>
-              </div>
-              <div className="row-actions">
-                <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
-                  Open
-                </button>
-                <button type="button" onClick={() => void forgetCloud(item.id)}>
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-        {cloud.length > LIST_PREVIEW && (
-          <button type="button" className="hub-list-more" onClick={() => setShowAllMeetings((open) => !open)}>
-            {showAllMeetings ? 'Show less' : `Show all ${cloud.length}`}
-          </button>
-        )}
-      </section>
+  function openRow(row: DashRow) {
+    const role = row.hosted ? 'host' : 'guest';
+    void join(row.code, row.title, role);
+  }
 
-      {wifiUrls.length > 0 && (
-        <section className="hub-panel desk-only">
-          <h2>Wi-Fi access</h2>
-          <p className="hint">Open on another device on the same network.</p>
-          <ul className="list plain wifi-list">
-            {wifiUrls.map((url) => (
-              <li key={url}>
-                <code className="wifi-url">{url}</code>
-                <div className="row-actions">
-                  <button type="button" onClick={() => void copyWifi(url)}>
-                    {copiedUrl === url ? 'Copied' : 'Copy'}
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <section className={`hub-panel hub-panel-scheduled${tab !== 'scheduled' ? ' phone-hide' : ''}`}>
-        <div className="card-head">
-          <h2>Scheduled</h2>
-          <button type="button" className="textbtn" onClick={() => setPlanning((open) => !open)}>
-            {planning ? 'Cancel' : 'Schedule'}
-          </button>
-        </div>
-        {planning && (
-          <form className="stack" onSubmit={createScheduled}>
-            <label className="field">
-              <span>Title</span>
-              <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Design review" />
-            </label>
-            <label className="field">
-              <span>Date and time</span>
-              <input type="datetime-local" value={when} onChange={(event) => setWhen(event.target.value)} required />
-            </label>
-            <button className="secondary" type="submit">
-              Create meeting code
-            </button>
-          </form>
-        )}
-        {schedule.length === 0 && !planning && <p className="empty">Nothing scheduled yet.</p>}
-        <ul className="list hub-list">
-          {schedule.map((item) => (
-            <li key={item.id}>
-              <div>
-                <strong>{item.title}</strong>
-                <span>{item.when ? new Date(item.when).toLocaleString() : 'No time set'}</span>
-                <code>{item.code}</code>
-              </div>
-              <div className="row-actions">
-                <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
-                  Start
-                </button>
-                <button type="button" onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}>
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      </section>
-
-      <section className={`hub-panel hub-panel-recent${tab !== 'recent' ? ' phone-hide' : ''}`}>
-        <h2>Recent on this device</h2>
-        {recent.length === 0 && <p className="empty">Local shortcuts for this device.</p>}
-        <ul className="list hub-list">
-          {recentVisible.map((item) => (
-            <li key={item.code}>
-              <div>
-                <strong>{item.title}</strong>
-                <span>{whenLabel(item.ts)}</span>
-                <code>{item.code}</code>
-              </div>
-              <div className="row-actions">
-                <button type="button" onClick={() => void join(item.code, item.title)}>
-                  Rejoin
-                </button>
-                <button type="button" onClick={() => onForget(item.code)}>
-                  Remove
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-        {recent.length > LIST_PREVIEW && (
-          <button type="button" className="hub-list-more" onClick={() => setShowAllRecent((open) => !open)}>
-            {showAllRecent ? 'Show less' : `Show all ${recent.length}`}
-          </button>
-        )}
-      </section>
-
-      <p className="fine hub-fine desk-only">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
-    </aside>
-  );
-
-  return (
-    <main className={`home home-hub${native ? ' home-native' : ''}`}>
-      <div className="hub-glow" aria-hidden="true" />
-      <div className="hub-grid" aria-hidden="true" />
-
-      {/* ?? Mobile / native app shell ?? */}
-      <div className="app-home">
-        <header className="app-home-top">
-          <button type="button" className="app-home-brand" onClick={onMarketing} aria-label="LetsConnect">
-            <Logo size={28} />
-            <strong>LetsConnect</strong>
-          </button>
-          <div className="app-home-top-actions">
-            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-            <button type="button" className="app-home-product desk-inline" onClick={onMarketing}>
-              Product
-            </button>
+  function rowActions(row: DashRow) {
+    const live = row.status === 'live' || row.status === 'progress';
+    const primaryLabel = row.status === 'scheduled' ? 'Start' : live ? 'Open' : 'Rejoin';
+    return (
+      <div className="dash-row-actions">
+        <button type="button" className="dash-btn dash-btn-ghost" onClick={() => openRow(row)}>
+          {primaryLabel}
+        </button>
+        {row.cloudId && (
+          <>
             <button
               type="button"
-              className="app-avatar-btn"
-              aria-label="Account menu"
-              aria-expanded={menuOpen}
-              onClick={() => setMenuOpen((open) => !open)}
+              className="dash-btn dash-btn-ghost"
+              onClick={() => void navigator.clipboard?.writeText(`${location.origin}/app?room=${row.code}`)}
             >
-              {user?.avatar ? (
-                <img src={user.avatar} alt="" />
-              ) : (
-                <span>{(user?.name || 'A').slice(0, 1)}</span>
-              )}
+              Copy link
             </button>
-          </div>
-        </header>
-
-        {menuOpen && (
-          <>
-            <button type="button" className="app-menu-backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />
-            <div className="app-account-menu" role="menu">
-              <div className="app-account-head">
-                <strong>{user?.name || 'You'}</strong>
-                <span>{user?.email || (user?.plan === 'free' ? 'Free plan' : user?.plan)}</span>
-              </div>
-              <label className="field app-name-field">
-                <span>Display name</span>
-                <input
-                  value={settings.name}
-                  maxLength={40}
-                  placeholder="How people see you"
-                  onChange={(event) => onSettings({ ...settings, name: event.target.value })}
-                />
-              </label>
-              <label className="check app-instant">
-                <input
-                  type="checkbox"
-                  checked={settings.instantJoin}
-                  onChange={(event) => onSettings({ ...settings, instantJoin: event.target.checked })}
-                />
-                <span>Join instantly (skip camera check)</span>
-              </label>
-              <button
-                type="button"
-                className="app-menu-logout"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onLogout();
-                }}
-              >
-                Log out
-              </button>
-            </div>
+            <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void forgetCloud(row.cloudId!)}>
+              Remove
+            </button>
           </>
         )}
-
-        <section className="app-home-hero">
-          <p className="app-home-hello">
-            {greeting}
-            {firstName ? `, ${firstName}` : ''}
-          </p>
-          <h1>{todayLabel}</h1>
-          <div className="app-week" role="list" aria-label="This week">
-            {weekDays.map((day) => (
-              <div key={day.key} className={`app-week-day${day.isToday ? ' is-today' : ''}`} role="listitem">
-                <span>{day.label}</span>
-                <strong>{day.date}</strong>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="app-home-toolbar">
-          <div className="join-row app-join-row app-join-inline">
-            <input
-              value={code}
-              placeholder="Enter a code"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              inputMode="text"
-              aria-label="Meeting code"
-              onChange={(event) => {
-                setCode(formatCode(event.target.value));
-                if (joinError) setJoinError('');
-              }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  void join(code, 'Joined meeting');
-                }
-              }}
-            />
-            <button type="button" className="secondary" onClick={() => void join(code, 'Joined meeting')}>
-              Join
-            </button>
-          </div>
-          {joinError && <p className="field-error app-join-error">{joinError}</p>}
-          <button type="button" className="app-new-btn" onClick={start}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" strokeLinecap="round" />
-            </svg>
-            New
+        {row.scheduleId && (
+          <button
+            type="button"
+            className="dash-btn dash-btn-ghost"
+            onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== row.scheduleId))}
+          >
+            Remove
           </button>
-        </section>
+        )}
+        {row.recentOnly && (
+          <button type="button" className="dash-btn dash-btn-ghost" onClick={() => onForget(row.code)}>
+            Remove
+          </button>
+        )}
+      </div>
+    );
+  }
 
-        <section className={`app-home-empty${hasToday ? ' has-meetings' : ''}`}>
-          {!hasToday ? (
-            <>
-              <div className="app-empty-art" aria-hidden="true">
-                <svg viewBox="0 0 160 110" fill="none">
-                  <path d="M18 78c18-28 38-40 62-40s44 12 62 40" stroke="currentColor" strokeWidth="2.2" opacity="0.25" />
-                  <rect x="48" y="28" width="64" height="48" rx="10" fill="var(--accent-soft)" stroke="var(--accent)" strokeWidth="2" />
-                  <circle cx="80" cy="52" r="12" stroke="var(--accent)" strokeWidth="2" />
-                  <path d="M68 78h24" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
-                  <path d="M118 34l14 8v16l-14 8-14-8V42l14-8z" fill="color-mix(in srgb, var(--accent) 18%, white)" stroke="var(--accent)" strokeWidth="1.8" />
+  const profileMenu = menuOpen ? (
+    <>
+      <div className="dash-profile-menu" role="menu" ref={menuRef}>
+        <div className="dash-profile-head">
+          <strong>{user?.name || 'Your profile'}</strong>
+          <span>{user?.email || (user?.plan === 'free' ? 'Free plan' : user?.plan)}</span>
+        </div>
+        <label className="dash-field">
+          <span>Display name</span>
+          <input
+            value={settings.name}
+            maxLength={40}
+            placeholder="How people see you"
+            onChange={(event) => onSettings({ ...settings, name: event.target.value })}
+          />
+        </label>
+        <button
+          type="button"
+          className="dash-menu-item"
+          onClick={() => {
+            setMenuOpen(false);
+            onMarketing();
+          }}
+        >
+          Product
+        </button>
+        <button type="button" className="dash-menu-item" disabled>
+          Connect calendar
+          <em>Coming soon</em>
+        </button>
+        <label className="dash-check">
+          <input
+            type="checkbox"
+            checked={settings.instantJoin}
+            onChange={(event) => onSettings({ ...settings, instantJoin: event.target.checked })}
+          />
+          <span>Join instantly (skip camera check)</span>
+        </label>
+        <button
+          type="button"
+          className="dash-menu-item"
+          onClick={() => onSettings({ ...settings, theme: settings.theme === 'dark' ? 'light' : 'dark' })}
+        >
+          Dark mode
+          <span className="dash-toggle-pill" aria-hidden="true">
+            {settings.theme === 'dark' ? 'On' : 'Off'}
+          </span>
+        </button>
+        <button
+          type="button"
+          className="dash-menu-item dash-menu-danger"
+          onClick={() => {
+            setMenuOpen(false);
+            onLogout();
+          }}
+        >
+          Sign out
+        </button>
+      </div>
+    </>
+  ) : null;
+
+  return (
+    <main className={`home hub-v2${native ? ' hub-v2-native' : ''}`}>
+      <div className="hub-v2-bg" aria-hidden="true" />
+      {inCallCode && onReturnToCall && (
+        <div className="dash-incall" role="status">
+          <span>You are still in {inCallCode}</span>
+          <button type="button" className="primary slim" onClick={onReturnToCall}>
+            Return to meeting
+          </button>
+        </div>
+      )}
+
+      <header className="dash-top">
+        <button type="button" className="dash-brand" onClick={onMarketing} aria-label="LetsConnect home">
+          <Logo size={28} />
+          <span>LetsConnect</span>
+        </button>
+
+        <nav className="dash-nav" aria-label="Dashboard sections">
+          {(
+            [
+              ['home', 'Home'],
+              ['meetings', 'Meetings'],
+              ['recordings', 'Recordings'],
+              ['followups', 'Follow-ups'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`dash-nav-link${navTab === id ? ' is-active' : ''}`}
+              aria-current={navTab === id ? 'page' : undefined}
+              onClick={() => scrollToNav(id)}
+            >
+              {label}
+              {id === 'recordings' && <em className="dash-soon">Coming soon</em>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="dash-top-actions">
+          <button type="button" className="dash-icon-btn dash-bell" aria-label="Notifications" disabled title="Coming soon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M15 17H9c-4 0-4-6 0-6h12c-4 2-4 6 0 6Z" strokeLinejoin="round" />
+              <path d="M10 17a2 2 0 0 0 4 0" strokeLinecap="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            className="dash-product-link"
+            onClick={onMarketing}
+          >
+            Product
+          </button>
+          <button
+            ref={avatarRef}
+            type="button"
+            className="dash-avatar"
+            aria-label="Profile menu"
+            aria-expanded={menuOpen}
+            aria-haspopup="menu"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {user?.avatar ? (
+              <img src={user.avatar} alt="" />
+            ) : (
+              <span>{(user?.name || settings.name || 'A').slice(0, 2).toUpperCase()}</span>
+            )}
+          </button>
+        </div>
+      </header>
+
+      {profileMenu}
+
+      <div className="dash-layout">
+        <div className="dash-col-main">
+          <section className="dash-greeting" aria-labelledby="dash-greeting-title">
+            <p className="dash-greeting-kicker">
+              {firstName ? `${greeting}, ${firstName}` : greeting}
+            </p>
+            <h1 id="dash-greeting-title">
+              <span className="dash-greeting-long">You have </span>
+              {meetingsToday} meeting{meetingsToday === 1 ? '' : 's'} today
+            </h1>
+          </section>
+
+          <section className="dash-card dash-card-new" aria-labelledby="dash-new-title">
+            <button type="button" className="dash-new-hero" onClick={start}>
+              <span className="dash-new-hero-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M12 5v14M5 12h14" strokeLinecap="round" />
                 </svg>
+              </span>
+              <span className="dash-new-hero-copy">
+                <h2 id="dash-new-title">New meeting</h2>
+                <p>Instant link {'\u00b7'} free, no time limit</p>
+              </span>
+              <span className="dash-new-hero-chevron" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </span>
+            </button>
+            <div className="dash-card-new-inner dash-desktop-only">
+              <div>
+                <h2>New meeting</h2>
+                <p>Start instantly or pick a time that works for everyone.</p>
               </div>
-              <h2>No meetings scheduled for today</h2>
-              <p>Schedule a meeting or enjoy the free time.</p>
-            </>
-          ) : (
-            <div className="app-today-list">
-              <h2>Today</h2>
-              <ul className="list hub-list">
-                {todaysMeetings.map((item) => (
-                  <li key={item.id}>
-                    <div>
+              <div className="dash-card-new-actions">
+                <button type="button" className="dash-btn dash-btn-primary" onClick={start}>
+                  Start instant meeting
+                </button>
+                <button
+                  type="button"
+                  className="dash-btn dash-btn-secondary"
+                  onClick={() => setPlanning((open) => !open)}
+                  aria-expanded={planning}
+                >
+                  {planning ? 'Cancel schedule' : 'Schedule'}
+                </button>
+              </div>
+            </div>
+            {planning && (
+              <form className="dash-schedule-form" onSubmit={createScheduled}>
+                <label className="dash-field">
+                  <span>Title</span>
+                  <input
+                    value={title}
+                    onChange={(event) => {
+                      setTitle(event.target.value);
+                      if (titleError) setTitleError('');
+                    }}
+                    placeholder="Design review"
+                    aria-invalid={titleError ? true : undefined}
+                  />
+                  {titleError ? <p className="dash-field-error">{titleError}</p> : null}
+                </label>
+                <label className="dash-field">
+                  <span>Date and time</span>
+                  <input
+                    type="datetime-local"
+                    value={when}
+                    onChange={(event) => {
+                      setWhen(event.target.value);
+                      if (whenError) setWhenError('');
+                    }}
+                    aria-invalid={whenError ? true : undefined}
+                  />
+                  {whenError ? <p className="dash-field-error">{whenError}</p> : null}
+                </label>
+                <button className="dash-btn dash-btn-secondary" type="submit">
+                  Create meeting code
+                </button>
+              </form>
+            )}
+          </section>
+
+          <section className="dash-join-block" aria-labelledby="dash-join-title">
+            <h2 id="dash-join-title" className="dash-desktop-only">
+              Join by code
+            </h2>
+            <div className="dash-join-row">
+              <input
+                value={code}
+                placeholder="Meeting code"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                inputMode="text"
+                aria-label="Meeting code"
+                aria-invalid={joinError ? true : undefined}
+                aria-describedby={joinError ? 'dash-join-error' : undefined}
+                onChange={(event) => {
+                  setCode(formatCode(event.target.value));
+                  if (joinError) setJoinError('');
+                }}
+                onBlur={() => setJoinError('')}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void join(code, 'Joined meeting');
+                  }
+                }}
+              />
+              <button type="button" className="dash-btn dash-btn-primary" onClick={() => void join(code, 'Joined meeting')}>
+                Join
+              </button>
+            </div>
+            {joinError && (
+              <p id="dash-join-error" className="dash-field-error" role="alert">
+                {joinError}
+              </p>
+            )}
+          </section>
+
+          <section className="dash-week" aria-label="Week overview">
+            <div className="dash-week-strip" role="list">
+              {weekDays.map((day) => (
+                <button
+                  key={day.key}
+                  type="button"
+                  className={`dash-week-day${day.isToday ? ' is-today' : ''}${selectedDay === day.key ? ' is-selected' : ''}`}
+                  role="listitem"
+                  aria-pressed={selectedDay === day.key}
+                  onClick={() => setSelectedDay(day.key)}
+                >
+                  <span>{day.label}</span>
+                  <strong>{day.date}</strong>
+                  {day.count > 0 && <i className="dash-week-dot" aria-label={`${day.count} scheduled`} />}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section ref={upcomingRef} className="dash-panel" aria-labelledby="dash-upcoming-title">
+            <div className="dash-panel-head">
+              <h2 id="dash-upcoming-title">Up next {'\u00b7'} {selectedDayLabel}</h2>
+            </div>
+            {daySchedule.length === 0 && dayCloud.length === 0 ? (
+              <div className="dash-empty">
+                <p>No meetings on {selectedDayLabel.toLowerCase()}.</p>
+                <button type="button" className="dash-btn dash-btn-ghost" onClick={() => setPlanning(true)}>
+                  Schedule one
+                </button>
+              </div>
+            ) : (
+              <ul className="dash-list">
+                {daySchedule.map((item) => (
+                  <li key={item.id} className="dash-list-item">
+                    <div className="dash-list-body">
                       <strong>{item.title}</strong>
-                      <span>{item.when ? new Date(item.when).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : 'Scheduled'}</span>
+                      <span>{item.when ? whenLabel(item.when) : 'Scheduled'}</span>
+                      <em className={`dash-status dash-status-scheduled`}>Scheduled</em>
                       <code>{item.code}</code>
                     </div>
-                    <div className="row-actions">
-                      <button type="button" onClick={() => void join(item.code, item.title, 'host')}>
+                    <div className="dash-row-actions">
+                      <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void join(item.code, item.title, 'host')}>
                         Start
+                      </button>
+                      <button
+                        type="button"
+                        className="dash-btn dash-btn-ghost"
+                        onClick={() => onSchedule(schedule.filter((meeting) => meeting.id !== item.id))}
+                      >
+                        Remove
                       </button>
                     </div>
                   </li>
                 ))}
+                {dayCloud.map((item) => {
+                  const live = !item.endedAt;
+                  const duration = formatDuration(item.durationMs, item.endedAt);
+                  return (
+                    <li key={item.id} className="dash-list-item">
+                      <div className="dash-list-body">
+                        <strong>{item.title}</strong>
+                        <span>
+                          {whenLabel(item.startedAt)}
+                          {duration && duration !== 'Ended' ? ` · ${duration}` : ''}
+                        </span>
+                        <em className={`dash-status ${live ? 'dash-status-live' : 'dash-status-ended'}`}>
+                          {live ? 'Live' : 'Ended'}
+                        </em>
+                        <code>{item.code}</code>
+                      </div>
+                      <div className="dash-row-actions">
+                        <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void join(item.code, item.title, 'host')}>
+                          {live ? 'Open' : 'Rejoin'}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
               </ul>
+            )}
+          </section>
+
+          <section ref={recordingsRef} className="dash-panel dash-panel-muted dash-recordings-mobile" aria-labelledby="dash-rec-title">
+            <h2 id="dash-rec-title">Recordings</h2>
+            <p className="dash-empty-inline">Coming soon {'\u2014'} your saved sessions will appear here.</p>
+          </section>
+
+          <section ref={recentRef} className="dash-panel dash-mobile-recent" aria-labelledby="dash-recent-mobile-title">
+            <div className="dash-panel-head">
+              <h2 id="dash-recent-mobile-title">Recent meetings</h2>
             </div>
+            <div className="dash-chips" role="tablist" aria-label="Recent filter">
+              {(['all', 'hosted', 'joined'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  role="tab"
+                  aria-selected={recentFilter === filter}
+                  className={`dash-chip${recentFilter === filter ? ' is-active' : ''}`}
+                  onClick={() => setRecentFilter(filter)}
+                >
+                  {filter === 'all' ? 'All' : filter === 'hosted' ? 'Hosted' : 'Joined'}
+                </button>
+              ))}
+            </div>
+            {filteredRecent.length === 0 ? (
+              <div className="dash-empty">
+                <p>No recent meetings{recentFilter === 'all' ? '' : ` (${recentFilter})`} yet.</p>
+              </div>
+            ) : (
+              <>
+                <ul className="dash-list">
+                  {recentVisible.map((row) => (
+                    <li key={row.id} className="dash-list-item">
+                      <div className="dash-list-body">
+                        <strong>{row.title}</strong>
+                        <span>{row.subtitle}</span>
+                        <em className={`dash-status dash-status-${row.status}`}>{statusLabel(row.status)}</em>
+                        <code>{row.code}</code>
+                      </div>
+                      {rowActions(row)}
+                    </li>
+                  ))}
+                </ul>
+                {filteredRecent.length > LIST_PREVIEW && (
+                  <button type="button" className="dash-link-more" onClick={() => setShowAllRecent((open) => !open)}>
+                    {showAllRecent ? 'Show less' : `Show all ${filteredRecent.length}`}
+                  </button>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+
+        <aside className="dash-col-side">
+          <section ref={followRef} className="dash-panel" aria-labelledby="dash-follow-title">
+            <div className="dash-panel-head">
+              <h2 id="dash-follow-title">Follow-ups due</h2>
+            </div>
+            {followUps.length === 0 ? (
+              <div className="dash-empty">
+                <p>No follow-ups yet</p>
+                <span className="dash-empty-hint">Promises from meetings will show up here when saved.</span>
+              </div>
+            ) : (
+              <ul className="dash-follow-list">
+                {followUps.map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            )}
+          </section>
+
+          <section className="dash-panel dash-panel-recent" aria-labelledby="dash-recent-title">
+            <div className="dash-panel-head">
+              <h2 id="dash-recent-title">Recent meetings</h2>
+            </div>
+            <div className="dash-chips" role="tablist" aria-label="Recent filter">
+              {(['all', 'hosted', 'joined'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  type="button"
+                  role="tab"
+                  aria-selected={recentFilter === filter}
+                  className={`dash-chip${recentFilter === filter ? ' is-active' : ''}`}
+                  onClick={() => setRecentFilter(filter)}
+                >
+                  {filter === 'all' ? 'All' : filter === 'hosted' ? 'Hosted' : 'Joined'}
+                </button>
+              ))}
+            </div>
+            {filteredRecent.length === 0 ? (
+              <div className="dash-empty">
+                <p>No recent meetings{recentFilter === 'all' ? '' : ` (${recentFilter})`} yet.</p>
+              </div>
+            ) : (
+              <>
+                <ul className="dash-list">
+                  {recentVisible.map((row) => (
+                    <li key={row.id} className="dash-list-item">
+                      <div className="dash-list-body">
+                        <strong>{row.title}</strong>
+                        <span>{row.subtitle}</span>
+                        <em className={`dash-status dash-status-${row.status}`}>{statusLabel(row.status)}</em>
+                        <code>{row.code}</code>
+                      </div>
+                      {rowActions(row)}
+                    </li>
+                  ))}
+                </ul>
+                {filteredRecent.length > LIST_PREVIEW && (
+                  <button type="button" className="dash-link-more" onClick={() => setShowAllRecent((open) => !open)}>
+                    {showAllRecent ? 'Show less' : `Show all ${filteredRecent.length}`}
+                  </button>
+                )}
+              </>
+            )}
+          </section>
+
+          {wifiUrls.length > 0 && (
+            <section className="dash-panel dash-panel-wifi" aria-labelledby="dash-wifi-title">
+              <h2 id="dash-wifi-title">Wi-Fi access</h2>
+              <p className="dash-empty-hint">Open on another device on the same network.</p>
+              <ul className="dash-wifi-list">
+                {wifiUrls.map((url) => (
+                  <li key={url}>
+                    <code>{url}</code>
+                    <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void copyWifi(url)}>
+                      {copiedUrl === url ? 'Copied' : 'Copy'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
           )}
-        </section>
 
-        <nav className="hub-tabs app-home-tabs" aria-label="Meeting lists">
-          <button type="button" className={tab === 'meetings' ? 'active' : ''} onClick={() => setTab('meetings')}>
-            Meetings
-            <span>{cloud.length}</span>
-          </button>
-          <button type="button" className={tab === 'scheduled' ? 'active' : ''} onClick={() => setTab('scheduled')}>
-            Planned
-            <span>{schedule.length}</span>
-          </button>
-          <button type="button" className={tab === 'recent' ? 'active' : ''} onClick={() => setTab('recent')}>
-            Recent
-            <span>{recent.length}</span>
-          </button>
-        </nav>
+          <section
+            ref={recordingsSideRef}
+            className="dash-panel dash-panel-muted dash-recordings-desktop"
+            aria-labelledby="dash-rec-desktop-title"
+          >
+            <h2 id="dash-rec-desktop-title">Recordings</h2>
+            <p className="dash-empty-inline">Coming soon {'\u2014'} your saved sessions will appear here.</p>
+          </section>
 
-        <div className="app-home-list">{list}</div>
+          <p className="dash-fine">You appear as {safeName(settings.name)}. Video goes peer-to-peer.</p>
+        </aside>
       </div>
+
+      <nav className="dash-tabbar" aria-label="Mobile navigation">
+        <button type="button" className={`dash-tabbar-btn${navTab === 'home' ? ' is-active' : ''}`} onClick={() => scrollToNav('home')}>
+          Home
+        </button>
+        <button type="button" className={`dash-tabbar-btn${navTab === 'meetings' ? ' is-active' : ''}`} onClick={() => scrollToNav('meetings')}>
+          Meetings
+        </button>
+        <button type="button" className="dash-tabbar-fab" aria-label="New meeting" onClick={start}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" strokeLinecap="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className={`dash-tabbar-btn${navTab === 'followups' ? ' is-active' : ''}`}
+          onClick={() => scrollToNav('followups')}
+        >
+          Follow-ups
+        </button>
+        <button
+          type="button"
+          className={`dash-tabbar-btn${navTab === 'recordings' ? ' is-active' : ''}`}
+          onClick={() => scrollToNav('recordings')}
+        >
+          Recordings
+        </button>
+      </nav>
     </main>
   );
 }

@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { scryptSync, timingSafeEqual, randomBytes } from 'node:crypto';
 
-const ROUNDS = 12;
+const ROUNDS = 10;
 
 /** Prefer bcrypt; still verify legacy scrypt `salt:hash` rows. */
 export async function hashPassword(password) {

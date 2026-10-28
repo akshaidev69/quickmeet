@@ -100,3 +100,10 @@ export function saveMeeting(input: Partial<SavedMeeting> & { code: string; title
 export function removeMeeting(id: string) {
   return request<{ ok: boolean }>(`/api/meetings/${id}`, { method: 'DELETE' });
 }
+
+export function joinWaitlist(email: string) {
+  return request<{ ok: boolean; already?: boolean }>('/api/waitlist', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}

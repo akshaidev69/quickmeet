@@ -14,6 +14,7 @@ import {
   updateUserProfile,
   upsertMeeting,
   upsertUserProfile,
+  addWaitlistEmail,
 } from './db.mjs';
 import {
   ensurePg,
@@ -349,11 +350,28 @@ async function issueSession(_res, userOrId) {
 export async function handleAuthApi(req, res) {
   const host = req.headers.host || 'localhost';
   const url = new URL(req.url || '/', `http://${host}`);
-  if (!url.pathname.startsWith('/api/auth') && !url.pathname.startsWith('/api/meetings') && url.pathname !== '/api/config') {
+  if (
+    !url.pathname.startsWith('/api/auth') &&
+    !url.pathname.startsWith('/api/meetings') &&
+    url.pathname !== '/api/config' &&
+    url.pathname !== '/api/waitlist'
+  ) {
     return false;
   }
 
   try {
+    if (url.pathname === '/api/waitlist' && req.method === 'POST') {
+      const body = await readBody(req);
+      const normalized = normalizeEmail(body.email);
+      if (!EMAIL_RE.test(normalized)) {
+        sendJson(res, 400, { error: 'Enter a valid email address.' });
+        return true;
+      }
+      const result = addWaitlistEmail(normalized);
+      sendJson(res, 200, { ok: true, ...(result.already ? { already: true } : {}) });
+      return true;
+    }
+
     if (url.pathname === '/api/config' && req.method === 'GET') {
       sendJson(res, 200, {
         google: googleConfigured() || Boolean(firebaseProjectId()),
@@ -481,8 +499,9 @@ export async function handleAuthApi(req, res) {
       let row = await dbFindByEmail(checked.email);
       let ok = row?.passwordHash ? await verifyPassword(checked.password, row.passwordHash) : false;
 
-      // Prefer durable Firebase check (and recreate local profile after wipe).
-      if (!ok) {
+      // Durable Firebase check when local hash is missing (Render disk wipe). Skip if
+      // we already rejected a local password — that keeps wrong-password errors fast.
+      if (!ok && !row?.passwordHash) {
         const fb = await firebaseSignIn(checked.email, checked.password);
         if (fb) {
           const passwordHash = await hashPassword(checked.password);

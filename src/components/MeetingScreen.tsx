@@ -1,7 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import {
   IconCam,
   IconCamOff,
+  IconCatchUp,
   IconCaptions,
   IconChat,
   IconHand,
@@ -13,12 +24,14 @@ import {
   IconPeople,
   IconPin,
   IconShare,
+  IconShield,
   IconSmile,
   Logo,
 } from './icons';
 import { LookMenu, ThemeButton } from './LookControls';
 import { useSelfLook } from '../hooks/useSelfLook';
-import { safeName } from '../lib/code';
+import { loadRoomDisplayName, safeName } from '../lib/code';
+import type { MeetingSummaryData } from './MeetingSummary';
 import { acquireMedia } from '../lib/media';
 import { getPreviewVideo, mountPreview } from '../lib/previewVideo';
 import { colorFor, initials } from '../lib/people';
@@ -29,14 +42,18 @@ import {
   type RecordCast,
   type RecordFile,
 } from '../lib/record';
-import { buildCatchUp, type CatchUpEvent } from '../lib/meetingIntel';
+import { Whiteboard } from './Whiteboard';
+import { MeetingPip } from './MeetingPip';
+import { detectFaceCenter, faceObjectPosition, tickFaceEase } from '../lib/faceFrame';
+import { aspectCss, loadFramePrefs, saveFramePrefs, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
+import { buildCatchUp, harvestPromises, type CatchUpEvent } from '../lib/meetingIntel';
 import { beep } from '../lib/sound';
 import { useCaptions } from '../hooks/useCaptions';
 import { useRoom, type RemotePeer } from '../hooks/useRoom';
 import { useToasts } from '../hooks/useToasts';
 import { SettingsDialog } from './SettingsDialog';
 import { RecordingsDialog } from './RecordingsDialog';
-import type { Settings } from '../types';
+import type { ChatMessage, Settings } from '../types';
 
 type Props = {
   code: string;
@@ -44,12 +61,15 @@ type Props = {
   settings: Settings;
   initialStream: MediaStream | null;
   onSettings: (settings: Settings) => void;
-  onLeave: () => void;
+  onLeave: (summary?: MeetingSummaryData) => void;
+  onMinimize?: () => void;
+  onRestore?: () => void;
+  docked?: boolean;
 };
 
 type Layout = 'grid' | 'speaker' | 'sidebar';
 type Panel = 'chat' | 'people' | 'catchup' | null;
-type Popover = 'react' | 'more' | 'look' | null;
+type Popover = 'react' | 'more' | 'look' | 'top' | null;
 type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | 'leave' | null;
 
 type TileModel = {
@@ -83,7 +103,8 @@ const shortcuts = [
   ['S', 'Share your screen, or stop sharing'],
   ['H', 'Raise or lower your hand'],
   ['C', 'Open or close chat'],
-  ['P', 'Open or close the people list'],
+  ['W', 'Open or close the whiteboard'],
+  ['P', 'Open or close the floating window'],
   ['R', 'Open reactions'],
   ['K', 'Turn captions on or off'],
   ['F', 'Full screen'],
@@ -110,6 +131,23 @@ function formatElapsed(ms: number) {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${pad(minutes)}:${pad(seconds)}`;
 }
 
+function ordinal(rank: number) {
+  const mod = rank % 100;
+  const suffix =
+    mod >= 11 && mod <= 13 ? 'th' : rank % 10 === 1 ? 'st' : rank % 10 === 2 ? 'nd' : rank % 10 === 3 ? 'rd' : 'th';
+  return `${rank}${suffix}`;
+}
+
+function readNetworkQuality(): 'Good' | 'Fair' {
+  const conn = (navigator as Navigator & { connection?: { effectiveType?: string; downlink?: number } }).connection;
+  if (!conn) return 'Good';
+  const type = conn.effectiveType;
+  if (type === 'slow-2g' || type === '2g') return 'Fair';
+  if (type === '3g') return 'Fair';
+  if (typeof conn.downlink === 'number' && conn.downlink < 1.2) return 'Fair';
+  return 'Good';
+}
+
 function gridClass(count: number) {
   if (count <= 1) return 'grid c1';
   if (count === 2) return 'grid c2';
@@ -121,10 +159,76 @@ function gridClass(count: number) {
   return 'grid cols6';
 }
 
+function tileFitFor(frame: FramePrefs, key: string, portrait: boolean): TileFit {
+  if (frame.fit[key]) return frame.fit[key];
+  if (portrait) return 'contain';
+  return frame.defaultFit;
+}
+
 function inviteLink(code: string) {
   const url = new URL(location.href);
   url.searchParams.set('room', code);
   return url.toString();
+}
+
+const CHAT_EMOJIS = ['\u{1F600}', '\u{1F602}', '\u{1F44D}', '\u{2764}\u{FE0F}', '\u{1F389}', '\u{1F64F}', '\u{1F44F}', '\u{1F525}'] as const;
+const MAX_CHAT_FILE_BYTES = 2 * 1024 * 1024;
+
+function urlsInText(text: string) {
+  const matches = text.match(/https?:\/\/[^\s<>"']+/gi);
+  if (!matches) return [];
+  return [...new Set(matches.map((url) => url.replace(/[.,;:!?)]+$/, '')))];
+}
+
+function linkHost(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+function buildLeaveSummary(input: {
+  code: string;
+  name: string;
+  startedAt: number;
+  peers: { name: string }[];
+  catchUp: CatchUpEvent[];
+  chat: { name: string; text: string; ts: number; system?: boolean }[];
+  faceCastReady: boolean;
+  hadPoll: boolean;
+}): MeetingSummaryData {
+  const highlights = input.catchUp
+    .filter((event) => event.text?.trim())
+    .slice(0, 12)
+    .map((event) => ({ id: event.id, ts: event.ts, text: event.text }));
+  const promises = harvestPromises(input.chat).map((item) => ({
+    text: item.text,
+    owner: item.name,
+  }));
+  const participants = [input.name, ...input.peers.map((peer) => peer.name)];
+  return {
+    code: input.code,
+    title: 'LetsConnect meeting',
+    startedAt: input.startedAt,
+    endedAt: Date.now(),
+    participants,
+    catchUp: highlights,
+    promises,
+    followUpCount: promises.length,
+    pollCount: input.hadPoll ? 1 : 0,
+    recordingAvailable: input.faceCastReady,
+    faceCastReady: input.faceCastReady,
+    presence: participants.map((participant) => ({ name: participant })),
+  };
+}
+
+function leaveMeetingCleanup(
+  streamRef: RefObject<MediaStream | null>,
+  screenRef: RefObject<MediaStream | null>,
+) {
+  streamRef.current?.getTracks().forEach((track) => track.stop());
+  screenRef.current?.getTracks().forEach((track) => track.stop());
 }
 
 function useLoudest(
@@ -197,7 +301,7 @@ function useLoudest(
   return active;
 }
 
-export function MeetingScreen({ code, asHost = false, settings, initialStream, onSettings, onLeave }: Props) {
+export function MeetingScreen({ code, asHost = false, settings, initialStream, onSettings, onLeave, onMinimize, onRestore, docked = false }: Props) {
   const { toasts, push: toast } = useToasts();
   const [stream, setStream] = useState<MediaStream | null>(initialStream);
   const [screenStream, setScreenStream] = useState<MediaStream | null>(null);
@@ -226,6 +330,8 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const [hideAlone, setHideAlone] = useState(false);
   const [hideTip, setHideTip] = useState(() => sessionStorage.getItem('lc-tip') === '1');
   const [chatText, setChatText] = useState('');
+  const [chatEmojiOpen, setChatEmojiOpen] = useState(false);
+  const [pendingFile, setPendingFile] = useState<ChatMessage['attachment'] | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [deviceNonce, setDeviceNonce] = useState(0);
@@ -240,6 +346,18 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const handsReady = useRef(false);
   const reactionSeen = useRef(new Set<string>());
   const [bursts, setBursts] = useState<{ id: string; emoji: string; x: number; drift: number; scale: number; delay: number }[]>([]);
+  const [viewportMobile, setViewportMobile] = useState(() => window.matchMedia('(max-width: 820px)').matches);
+  const [boardOpen, setBoardOpen] = useState(false);
+  const [frame, setFrame] = useState<FramePrefs>(loadFramePrefs);
+  const [pipGesture, setPipGesture] = useState(() => sessionStorage.getItem('LetsConnect.pipGesture') === '1');
+  const [pipNonce, setPipNonce] = useState(0);
+  const [faceEase, setFaceEase] = useState({ x: 0.5, y: 0.5, zoom: 1 });
+  const [boardEvents, setBoardEvents] = useState<CatchUpEvent[]>([]);
+  const [noticeIndex, setNoticeIndex] = useState(0);
+  const [networkQuality, setNetworkQuality] = useState<'Good' | 'Fair'>(() => readNetworkQuality());
+  const handOrderRef = useRef(new Map<string, number>());
+  const handSeqRef = useRef(0);
+  const [handOrderTick, setHandOrderTick] = useState(0);
   const chatCount = useRef(0);
   const lastCaption = useRef(0);
   const streamRef = useRef<MediaStream | null>(initialStream);
@@ -251,6 +369,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const stageRef = useRef<HTMLDivElement>(null);
   const roomRef = useRef<HTMLElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
+  const chatFileInput = useRef<HTMLInputElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const recorderRef = useRef<ReturnType<typeof createRecorder>>(null);
   const audioTracksRef = useRef<() => MediaStreamTrack[]>(() => []);
@@ -267,6 +386,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const hostCastHandler = useRef<(cast: RecordCast, active: boolean) => void>(() => undefined);
   const hostIdRef = useRef<string | null>(null);
   const chatRef = useRef<{ name: string; text: string; ts: number; system?: boolean }[]>([]);
+  const finishLeaveRef = useRef<(() => void) | null>(null);
 
   const {
     myId,
@@ -283,8 +403,11 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     ask,
     poll,
     hostCastActive,
+    meetingLocked,
     dismissAsk,
     sendChat,
+    endMeeting,
+    setMeetingLock,
     sendReaction,
     sendCaption,
     kick,
@@ -298,9 +421,17 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     createPoll,
     vote,
     endPoll,
+    boardObjects,
+    boardMeta,
+    boardLive,
+    boardCursors,
+    sendBoardOp,
+    sendBoardLive,
+    sendBoardCursor,
+    sendBoardMeta,
   } = useRoom({
     code,
-    name: settings.name,
+    name: loadRoomDisplayName(code, settings.name),
     stream: sendStream,
     micOn,
     camOn,
@@ -314,6 +445,9 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       toast(kind === 'mic' ? 'The host turned your microphone off.' : 'The host turned your camera off.');
     },
     onHostCast: (cast, active) => hostCastHandler.current(cast, active),
+    onMeetingEnded: () => {
+      finishLeaveRef.current?.();
+    },
   });
 
   // Each person captions their own mic and shares text instantly.
@@ -327,7 +461,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     },
   );
 
-  const name = safeName(settings.name);
+  const name = safeName(loadRoomDisplayName(code, settings.name));
   const isHost = hostId === myId;
   const isCoHost = coHostIds.includes(myId);
   const canModerate = isHost || isCoHost;
@@ -388,6 +522,23 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   }, []);
 
   useEffect(() => {
+    const mq = window.matchMedia('(max-width: 820px)');
+    const sync = () => setViewportMobile(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    const conn = (navigator as Navigator & { connection?: EventTarget & { effectiveType?: string; downlink?: number } })
+      .connection;
+    if (!conn || !('addEventListener' in conn)) return;
+    const sync = () => setNetworkQuality(readNetworkQuality());
+    conn.addEventListener('change', sync);
+    return () => conn.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
     if (skipAcquire.current) {
       skipAcquire.current = false;
       return;
@@ -416,7 +567,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       if (previous && previous !== result.stream) previous.getTracks().forEach((track) => track.stop());
       streamRef.current = result.stream;
       setStream(result.stream);
-      if (result.warning) toast(result.warning);
+      if (result.warning) toast(result.warning, { key: 'no-device', oncePerSession: true });
       if (!result.audio) {
         micOnRef.current = false;
         setMicOn(false);
@@ -551,6 +702,19 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   }, []);
 
   useEffect(() => {
+    if (!frame.centerMe) {
+      setFaceEase(tickFaceEase(null, false, frame.selfZoom));
+      return undefined;
+    }
+    const timer = window.setInterval(() => {
+      void detectFaceCenter(getPreviewVideo()).then((box) => {
+        setFaceEase(tickFaceEase(box, true, frame.selfZoom));
+      });
+    }, 100);
+    return () => window.clearInterval(timer);
+  }, [frame.centerMe, frame.selfZoom]);
+
+  useEffect(() => {
     setScreenTrack(screenStream);
   }, [screenStream, setScreenTrack]);
 
@@ -582,18 +746,12 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
 
   useEffect(() => {
     if (!captionsOn) return;
-    if (!captionSupported || captionError === 'unsupported') {
-      setCaptionsOn(false);
-      toast('Live captions need Chrome or Edge on HTTPS.');
-      return;
-    }
     if (captionError === 'denied') {
-      setCaptionsOn(false);
       toast('Allow microphone access to use captions.');
       return;
     }
     if (captionError === 'failed') toast('Captions could not start. Try again.');
-  }, [captionError, captionSupported, captionsOn, toast]);
+  }, [captionError, captionsOn, toast]);
 
   useEffect(() => {
     if (!settings.sounds) {
@@ -615,6 +773,12 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     peers.forEach((peer) => {
       if (peer.hand) raised.add(peer.id);
     });
+    for (const id of raised) {
+      if (!handOrderRef.current.has(id)) handOrderRef.current.set(id, (handSeqRef.current += 1));
+    }
+    for (const id of [...handOrderRef.current.keys()]) {
+      if (!raised.has(id)) handOrderRef.current.delete(id);
+    }
     if (!handsReady.current) {
       handsSeen.current = raised;
       handsReady.current = true;
@@ -633,6 +797,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     for (const id of [...handsSeen.current]) {
       if (!raised.has(id)) handsSeen.current.delete(id);
     }
+    setHandOrderTick((value) => value + 1);
   }, [hand, myId, peers, settings.sounds, toast]);
 
   useEffect(() => {
@@ -719,16 +884,16 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     }
   }
 
+  function clearScreenShare(stream: MediaStream | null) {
+    stream?.getTracks().forEach((track) => track.stop());
+    setScreenStream(null);
+    setSharingPick(false);
+    void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
+  }
+
   async function toggleShare() {
     if (screenStream) {
-      screenStream.getTracks().forEach((track) => track.stop());
-      setScreenStream(null);
-      try {
-        const { stopNativeScreenShare } = await import('../lib/nativeScreenShare');
-        await stopNativeScreenShare();
-      } catch {
-        /* ignore */
-      }
+      clearScreenShare(screenStream);
       return;
     }
 
@@ -739,50 +904,51 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
         const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
         if (isNativeApp() && (await nativeScreenShareAvailable())) {
           const display = await startNativeScreenShare();
-          display.getVideoTracks()[0]?.addEventListener('ended', () => {
-            display.getTracks().forEach((track) => track.stop());
-            setScreenStream((current) => (current === display ? null : current));
-            void import('../lib/nativeScreenShare').then((mod) => mod.stopNativeScreenShare()).catch(() => undefined);
-          });
+          display.getVideoTracks()[0]?.addEventListener('ended', () => clearScreenShare(display));
           setScreenStream(display);
-          toast('Sharing your screen \u2014 app stays open in a small window.');
+          toast('Sharing your screen — app stays open in a small window.');
           return;
         }
       } catch (error) {
-        if (error instanceof Error && /denied|permission|cancel/i.test(error.message)) {
-          toast('Screen share canceled');
+        if (error instanceof Error && /denied|permission|cancel|abort/i.test(error.message)) {
+          toast('Screen share canceled', { key: 'share-cancel' });
           return;
         }
       }
 
       if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
-        toast('Screen share is not available on this device.');
+        toast("Screen sharing isn't supported in this browser", { key: 'share-unsupported' });
         return;
       }
+
+      let display: MediaStream;
       try {
-        let display: MediaStream;
-        try {
-          display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        } catch (error) {
-          if (error instanceof DOMException && error.name === 'NotAllowedError') {
-            toast('Screen share canceled');
-            return;
-          }
-          display = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        }
-        display.getVideoTracks()[0]?.addEventListener('ended', () => {
-          display.getTracks().forEach((track) => track.stop());
-          setScreenStream((current) => (current === display ? null : current));
-        });
-        setScreenStream(display);
-        toast('Sharing your screen.');
+        display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       } catch (error) {
-        if (error instanceof DOMException && error.name === 'NotAllowedError') {
-          toast('Screen share canceled');
+        const name = error instanceof DOMException ? error.name : '';
+        if (name === 'NotAllowedError' || name === 'AbortError') {
+          toast('Screen share canceled', { key: 'share-cancel' });
           return;
         }
-        toast('Could not share the screen. Allow screen capture when prompted.');
+        try {
+          display = await navigator.mediaDevices.getDisplayMedia({ video: true });
+        } catch (retryError) {
+          const retryName = retryError instanceof DOMException ? retryError.name : '';
+          if (retryName === 'NotAllowedError' || retryName === 'AbortError') {
+            toast('Screen share canceled', { key: 'share-cancel' });
+            return;
+          }
+          toast('Could not share the screen. Allow screen capture when prompted.', { key: 'share-fail' });
+          return;
+        }
       }
+      display.getVideoTracks().forEach((track) => {
+        track.addEventListener('ended', () => clearScreenShare(display));
+      });
+      setScreenStream(display);
+      toast('Sharing your screen.', { key: 'share-on' });
+    } catch {
+      toast('Could not share the screen. Allow screen capture when prompted.', { key: 'share-fail' });
     } finally {
       setSharingPick(false);
     }
@@ -884,18 +1050,14 @@ async function toggleRecord() {
     }
   }
 
-  async function popOut() {
-    const video = localVideoRef.current;
-    if (!video || !camOn) {
-      toast('Turn your camera on to pop out your video.');
-      return;
-    }
-    try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else await video.requestPictureInPicture();
-    } catch {
-      toast('Could not open the small video window.');
-    }
+  function patchFrame(partial: Partial<FramePrefs>) {
+    const next = { ...frame, ...partial };
+    setFrame(next);
+    saveFramePrefs(next);
+  }
+
+  function popOut() {
+    setPipNonce((value) => value + 1);
   }
 
   function togglePanel(next: Panel) {
@@ -906,22 +1068,107 @@ async function toggleRecord() {
   function sendMessage(event: FormEvent) {
     event.preventDefault();
     const text = chatText.trim();
-    if (!text) return;
-    sendChat(text);
+    if (!text && !pendingFile) return;
+    sendChat(text, pendingFile ?? undefined);
     setChatText('');
+    setPendingFile(null);
+    setChatEmojiOpen(false);
   }
+
+  function onChatFilePick(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (file.size > MAX_CHAT_FILE_BYTES) {
+      toast('Files must be smaller than 2 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPendingFile({
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        data: String(reader.result ?? ''),
+        size: file.size,
+      });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  useEffect(() => {
+    if (!popover && !dialog) return;
+    roomRef.current?.querySelectorAll('[data-tip-active]').forEach((element) => {
+      element.removeAttribute('data-tip-active');
+    });
+    roomRef.current?.querySelectorAll('.cmd:focus, .leave:focus').forEach((element) => {
+      (element as HTMLElement).blur();
+    });
+  }, [dialog, popover]);
+
+  const catchUpEvents = useMemo(() => {
+    const hands = [
+      ...(hand ? [name] : []),
+      ...peers.filter((peer) => peer.hand).map((peer) => peer.name),
+    ];
+    return [
+      ...boardEvents,
+      ...buildCatchUp({
+        joinedAt,
+        chat,
+        airtime: {},
+        names: Object.fromEntries([[myId, name], ...peers.map((peer) => [peer.id, peer.name] as const)]),
+        hands,
+        sharing: [
+          ...(sharing ? [name] : []),
+          ...peers.filter((peer) => peer.sharing).map((peer) => peer.name),
+        ],
+      }),
+    ].sort((a, b) => b.ts - a.ts);
+  }, [boardEvents, chat, hand, joinedAt, myId, name, peers, sharing]);
+
+  const finishLeave = useCallback(() => {
+    leaveMeetingCleanup(streamRef, screenRef);
+    onLeave(
+      buildLeaveSummary({
+        code,
+        name,
+        startedAt: started.current,
+        peers,
+        catchUp: catchUpEvents,
+        chat,
+        faceCastReady: Boolean(recordReady?.length),
+        hadPoll: Boolean(poll),
+      }),
+    );
+  }, [catchUpEvents, chat, code, name, onLeave, peers, poll, recordReady]);
+  finishLeaveRef.current = finishLeave;
 
   const uiRef = useRef({
     dialog,
     popover,
     panel,
     captionsOn,
-    leave: onLeave,
+    boardOpen,
+    leave: finishLeave,
     toggleShare,
     toggleFullscreen,
     togglePanel,
+    popOut,
+    toggleBoard: () => setBoardOpen((value) => !value),
   });
-  uiRef.current = { dialog, popover, panel, captionsOn, leave: onLeave, toggleShare, toggleFullscreen, togglePanel };
+  uiRef.current = {
+    dialog,
+    popover,
+    panel,
+    captionsOn,
+    boardOpen,
+    leave: finishLeave,
+    toggleShare,
+    toggleFullscreen,
+    togglePanel,
+    popOut,
+    toggleBoard: () => setBoardOpen((value) => !value),
+  };
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -931,12 +1178,14 @@ async function toggleRecord() {
         (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
       const ui = uiRef.current;
       if (event.key === 'Escape') {
+        if (typing) return;
         if (ui.dialog) setDialog(null);
         else if (ui.popover) setPopover(null);
+        else if (ui.boardOpen) setBoardOpen(false);
         else if (ui.panel) setPanel(null);
         return;
       }
-      if (typing || ui.dialog || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (typing || ui.dialog || ui.boardOpen || event.metaKey || event.ctrlKey || event.altKey) return;
       const key = event.key.toLowerCase();
       const run = (action: () => void) => {
         event.preventDefault();
@@ -948,7 +1197,8 @@ async function toggleRecord() {
       else if (key === 's') run(() => void ui.toggleShare());
       else if (key === 'h') run(() => setHand((value) => !value));
       else if (key === 'c') run(() => ui.togglePanel('chat'));
-      else if (key === 'p') run(() => ui.togglePanel('people'));
+      else if (key === 'w') run(() => ui.toggleBoard());
+      else if (key === 'p') run(() => ui.popOut());
       else if (key === 'r') run(() => setPopover('react'));
       else if (key === 'b') run(() => setPopover('look'));
       else if (key === 'k') run(() => setCaptionsOn((value) => !value));
@@ -957,8 +1207,6 @@ async function toggleRecord() {
         event.preventDefault();
         setPopover(null);
         if (ui.dialog === 'leave') {
-          streamRef.current?.getTracks().forEach((track) => track.stop());
-          screenRef.current?.getTracks().forEach((track) => track.stop());
           ui.leave();
         } else openDialog('leave');
       } else if (event.key === '?') run(() => openDialog('shortcuts'));
@@ -966,24 +1214,6 @@ async function toggleRecord() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  const catchUpEvents = useMemo(() => {
-    const hands = [
-      ...(hand ? [name] : []),
-      ...peers.filter((peer) => peer.hand).map((peer) => peer.name),
-    ];
-    return buildCatchUp({
-      joinedAt,
-      chat,
-      airtime: {},
-      names: Object.fromEntries([[myId, name], ...peers.map((peer) => [peer.id, peer.name] as const)]),
-      hands,
-      sharing: [
-        ...(sharing ? [name] : []),
-        ...peers.filter((peer) => peer.sharing).map((peer) => peer.name),
-      ],
-    });
-  }, [chat, hand, joinedAt, myId, name, peers, sharing]);
 
   const youTile: TileModel = {
     key: `cam:${myId}`,
@@ -1054,10 +1284,10 @@ async function toggleRecord() {
       })),
   ];
 
-  function renderTile(tile: TileModel) {
+  function renderTile(tile: TileModel, layoutRole?: 'main' | 'pip') {
     const waitMs = now - (seenAt.current[tile.peerId] || now);
     const connecting = tile.connection && tile.connection !== 'connected';
-    const slow = connecting && waitMs > 8000;
+    const slow = connecting && waitMs > 10000;
     const timedOut = connecting && waitMs > 15000;
     const connection = timedOut ? 'failed' : tile.connection;
     const role =
@@ -1074,18 +1304,35 @@ async function toggleRecord() {
             : coHostIds.includes(tile.peerId)
               ? 'Co-host'
               : 'Guest';
+    const portrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
+    const fit = tileFitFor(frame, tile.key, portrait);
     return (
       <Tile
         key={tile.key}
         tile={{ ...tile, connection }}
         role={role}
+        layoutRole={layoutRole}
+        handRank={tile.hand ? handRankByPeer.get(tile.peerId) ?? null : null}
         pinned={pin === tile.key}
         localRef={tile.you && tile.kind === 'camera' ? localVideoRef : undefined}
         lookCanvas={tile.you && tile.kind === 'camera' ? look.canvas : null}
         casted={recording && castIds.includes(tile.peerId) && tile.kind === 'camera'}
         slow={Boolean(slow)}
+        trouble={Boolean(slow && connecting && tile.connection !== 'failed')}
+        fit={fit}
+        portrait={portrait}
+        selfZoom={tile.you ? (frame.centerMe ? faceEase.zoom : frame.selfZoom) : 1}
+        selfPanX={tile.you ? (frame.centerMe ? faceEase.x : frame.selfPanX) : 0.5}
+        selfPanY={tile.you ? (frame.centerMe ? faceEase.y : frame.selfPanY) : 0.5}
+        onFit={(next) => patchFrame({ fit: { ...frame.fit, [tile.key]: next } })}
+        onSelfCrop={
+          tile.you
+            ? (zoom, x, y) => patchFrame({ selfZoom: zoom, selfPanX: x, selfPanY: y })
+            : undefined
+        }
         onPin={() => setPin((current) => (current === tile.key ? null : tile.key))}
         onRetry={() => retry(tile.peerId)}
+        onCopyInvite={() => void copyLink()}
       />
     );
   }
@@ -1112,13 +1359,73 @@ async function toggleRecord() {
     ...peers.filter((peer) => peer.sharing).map((peer) => `${peer.name} is sharing their screen`),
   ].filter((item): item is string => Boolean(item));
 
+  type NoticeKind =
+    | 'ask'
+    | 'admit'
+    | 'share-pick'
+    | 'share'
+    | 'hear'
+    | 'host-tip'
+    | 'headphone'
+    | 'facecast'
+    | 'server';
+  const noticeQueue = useMemo((): NoticeKind[] => {
+    const list: NoticeKind[] = [];
+    if (ask) list.push('ask');
+    if (canModerate && waiting.length > 0) list.push('admit');
+    if (sharers.length > 0) list.push('share');
+    if (hear) list.push('hear');
+    if (peers.length === 0 && !hideAlone) list.push('host-tip');
+    if (peers.length > 0 && !hideTip) list.push('headphone');
+    if (!canRecord && hostCastActive && !recording) list.push('facecast');
+    if (serverMessage) list.push('server');
+    return list;
+  }, [
+    ask,
+    canModerate,
+    waiting.length,
+    sharers.length,
+    hear,
+    peers.length,
+    hideAlone,
+    hideTip,
+    canRecord,
+    hostCastActive,
+    recording,
+    serverMessage,
+  ]);
+
+  useEffect(() => {
+    setNoticeIndex(0);
+  }, [noticeQueue.join('|')]);
+
+  useEffect(() => {
+    if (noticeQueue.length <= 1) return;
+    const timer = window.setInterval(() => {
+      setNoticeIndex((value) => (value + 1) % noticeQueue.length);
+    }, 7000);
+    return () => window.clearInterval(timer);
+  }, [noticeQueue.length]);
+
+  const noticeKind = noticeQueue.length ? noticeQueue[noticeIndex % noticeQueue.length] : null;
+  const noticeCounter =
+    noticeQueue.length > 1 ? `${(noticeIndex % noticeQueue.length) + 1}/${noticeQueue.length}` : null;
+
+  const handRankByPeer = useMemo(() => {
+    void handOrderTick;
+    const ranked = [...handOrderRef.current.entries()].sort((a, b) => a[1] - b[1]);
+    const map = new Map<string, number>();
+    ranked.forEach(([id], index) => map.set(id, index + 1));
+    return map;
+  }, [hand, peers, handOrderTick]);
+
   if (kickedBy) {
     return (
       <main className="home kicked">
         <section className="card narrow">
           <h1>{kickedBy} removed you from the meeting</h1>
-          <p>You can join again with the same link \u00b7 the host will need to admit you again.</p>
-          <button type="button" className="primary" onClick={onLeave}>
+          <p>You can join again with the same link · the host will need to admit you again.</p>
+          <button type="button" className="primary" onClick={() => onLeave()}>
             Back to home
           </button>
         </section>
@@ -1132,7 +1439,7 @@ async function toggleRecord() {
         <section className="card narrow">
           <h1>The host did not let you in</h1>
           <p>Ask them for a new invite, or try again later.</p>
-          <button type="button" className="primary" onClick={onLeave}>
+          <button type="button" className="primary" onClick={() => onLeave()}>
             Back to home
           </button>
         </section>
@@ -1154,7 +1461,7 @@ async function toggleRecord() {
         onTheme={(theme) => onSettings({ ...settings, theme })}
         onCam={() => toggleCam()}
         onMic={() => toggleMic()}
-        onLeave={onLeave}
+        onLeave={() => onLeave()}
         onCopy={() => void copyLink()}
       />
     );
@@ -1166,6 +1473,13 @@ async function toggleRecord() {
     cameras.find((tile) => !tile.you) ||
     cameras[0];
   const otherTiles = cameras.filter((tile) => tile.key !== mainTile.key);
+  const mobileFocus = viewportMobile && screens.length === 0 && cameras.length >= 2;
+  const mobileMainTile =
+    cameras.find((tile) => tile.speaking && !tile.you) ||
+    cameras.find((tile) => !tile.you) ||
+    mainTile;
+  const mobilePipTile = cameras.find((tile) => tile.you && tile.key !== mobileMainTile.key) || null;
+  const inCallCount = peers.length + 1;
   const raisedHands = [
     ...(hand ? [{ id: myId, name: `${name} (You)` }] : []),
     ...peers.filter((peer) => peer.hand).map((peer) => ({ id: peer.id, name: peer.name })),
@@ -1178,25 +1492,38 @@ async function toggleRecord() {
         : `${raisedHands[0].name.replace(' (You)', '')} +${raisedHands.length - 1}`;
 
   return (
-    <main className="room room-meet" ref={roomRef}>
+    <main className={cx('room', 'room-meet', docked && 'is-docked')} ref={roomRef}>
       <header className="topbar">
         <div className="top-id">
-          <Logo size={22} />
-          <strong className="desk-only">LetsConnect</strong>
-          <code className="meet-code">{code}</code>
-          <button type="button" className="secondary slim desk-only" onClick={() => void copyLink()}>
-            Copy link
+          <button type="button" className="meet-logo-btn" aria-label="Minimize to home" onClick={() => onMinimize?.()}>
+            <Logo size={22} />
           </button>
+          <div className="meet-title-block desk-only">
+            <strong>LetsConnect</strong>
+            <span className="meet-subtitle">Meeting room</span>
+          </div>
+          <code className="meet-code" title="Meeting code">
+            {code}
+          </code>
         </div>
-        <div className="top-mid desk-only">
-          <span className="time">{formatElapsed(now - started.current)}</span>
+        <div className="top-mid">
+          <span className="time" aria-label="Elapsed time">
+            {formatElapsed(now - started.current)}
+          </span>
           {isHost ? (
-            <span className="pill">Host</span>
+            <>
+              <span className="pill meet-host-pill meet-host-full">You&apos;re the host</span>
+              <span className="pill meet-host-pill meet-host-short">Host</span>
+            </>
           ) : isCoHost ? (
             <span className="pill">Co-host</span>
           ) : hostPeer ? (
-            <span className="pill">Host: {hostPeer.name}</span>
+            <span className="pill desk-only">Host: {hostPeer.name}</span>
           ) : null}
+          <span className="pill meet-in-call">{inCallCount} in call</span>
+          {meetingLocked && (
+            <span className="pill meet-locked-pill">Meeting locked · new people wait</span>
+          )}
           {recordingText && (
             <span className="recpill">
               <i />
@@ -1211,6 +1538,16 @@ async function toggleRecord() {
           )}
         </div>
         <div className="top-actions">
+          <span className="meet-trust-pill desk-only" title="Peer-to-peer · encrypted in transit">
+            <IconShield />
+            Peer-to-peer
+          </span>
+          <span
+            className={cx('meet-network-pill', 'desk-only', networkQuality === 'Good' ? 'good' : 'fair')}
+            title="Network quality"
+          >
+            {networkQuality}
+          </span>
           <button
             type="button"
             className={panel === 'catchup' ? 'top-icon on' : 'top-icon'}
@@ -1219,21 +1556,23 @@ async function toggleRecord() {
             onClick={() => setPanel((value) => (value === 'catchup' ? null : 'catchup'))}
           >
             <span className="desk-only">Catch-Up</span>
-            <span className="phone-only top-icon-label">Up</span>
+            <span className="phone-only top-icon-label" aria-hidden="true">
+              <IconCatchUp />
+            </span>
           </button>
           <button
             type="button"
-            className={panel === 'people' ? 'top-icon on' : 'top-icon'}
+            className={panel === 'people' ? 'top-icon on desk-only' : 'top-icon desk-only'}
             title="People"
             aria-label="People"
             onClick={() => setPanel((value) => (value === 'people' ? null : 'people'))}
           >
             <IconPeople />
-            <em>{peers.length + 1}</em>
+            <em>{inCallCount}</em>
           </button>
           <button
             type="button"
-            className={panel === 'chat' ? 'top-icon on' : 'top-icon'}
+            className={panel === 'chat' ? 'top-icon on' : 'top-icon desk-only'}
             title="Chat"
             aria-label="Chat"
             onClick={() => setPanel((value) => (value === 'chat' ? null : 'chat'))}
@@ -1241,9 +1580,6 @@ async function toggleRecord() {
             <IconChat />
             {unread > 0 && <em className="badge">{unread}</em>}
           </button>
-          <span className="desk-only">
-            <ThemeButton theme={settings.theme} onChange={(theme) => onSettings({ ...settings, theme })} />
-          </span>
           <div className="seg desk-only" aria-label="Layout">
             {screens.length ? (
               <span className="pill">Presentation</span>
@@ -1258,124 +1594,266 @@ async function toggleRecord() {
                 <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
                   Sidebar
                 </button>
+                {(['auto', '16:9', '4:3', '1:1', '9:16'] as LayoutAspect[]).map((ratio) => (
+                  <button
+                    key={ratio}
+                    type="button"
+                    aria-pressed={frame.aspect === ratio}
+                    onClick={() => patchFrame({ aspect: ratio })}
+                  >
+                    {ratio === 'auto' ? 'Auto' : ratio}
+                  </button>
+                ))}
+                <button type="button" aria-pressed={frame.centerMe} onClick={() => patchFrame({ centerMe: !frame.centerMe })}>
+                  Center me
+                </button>
               </>
+            )}
+          </div>
+          <div className="meet-top-overflow phone-only">
+            <button
+              type="button"
+              className={popover === 'top' ? 'top-icon on' : 'top-icon'}
+              aria-label="More room actions"
+              aria-expanded={popover === 'top'}
+              onClick={() => setPopover((value) => (value === 'top' ? null : 'top'))}
+            >
+              <IconMore />
+            </button>
+            {popover === 'top' && (
+              <div className="meet-top-overflow-pop" role="menu">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPopover(null);
+                    void copyLink();
+                  }}
+                >
+                  Copy link
+                </button>
+                <button type="button" aria-pressed={layout === 'grid'} onClick={() => setLayout('grid')}>
+                  Grid layout
+                </button>
+                <button type="button" aria-pressed={layout === 'speaker'} onClick={() => setLayout('speaker')}>
+                  Speaker layout
+                </button>
+                <button type="button" aria-pressed={layout === 'sidebar'} onClick={() => setLayout('sidebar')}>
+                  Sidebar layout
+                </button>
+                {(['auto', '16:9', '4:3', '1:1', '9:16'] as LayoutAspect[]).map((ratio) => (
+                  <button key={ratio} type="button" aria-pressed={frame.aspect === ratio} onClick={() => patchFrame({ aspect: ratio })}>
+                    Frame {ratio === 'auto' ? 'auto' : ratio}
+                  </button>
+                ))}
+                <button type="button" aria-pressed={frame.centerMe} onClick={() => patchFrame({ centerMe: !frame.centerMe })}>
+                  {frame.centerMe ? 'Center me on' : 'Center me'}
+                </button>
+              </div>
             )}
           </div>
         </div>
       </header>
 
-      <div className="banners">
-        {sharingPick && <div className="banner info">Choose what to share\u2026</div>}
-        {serverMessage && <div className="banner warn">{serverMessage}</div>}
-        {canModerate && waiting.length > 0 && (
-          <AdmitBanner
-            waiting={waiting}
-            onReview={() => setPanel('people')}
-            onAdmit={admit}
-            onDeny={deny}
-            onAdmitAll={() => waiting.forEach((person) => admit(person.id))}
-          />
-        )}
-        {!canRecord && hostCastActive && !recording && (
-          <div className="banner info">
-            <span>A host or co-host is directing FaceCast \u00b7 only their chosen faces go into the marketing cut.</span>
-          </div>
-        )}
-        {hear && (
-          <div className="banner ask">
-            <span>Click to hear other people.</span>
-            <button
-              type="button"
-              className="primary slim"
-              onClick={() => {
-                setHear(false);
-                document.querySelectorAll('audio').forEach((element) => void element.play().catch(() => undefined));
-              }}
-            >
-              Hear people
-            </button>
-          </div>
-        )}
-        {sharers.length > 0 && (
-          <div className="banner share">
-            <span>{sharers.join('. ')}.</span>
-            {sharing && (
-              <button type="button" onClick={() => void toggleShare()}>
-                Stop sharing
-              </button>
-            )}
-          </div>
-        )}
-        {peers.length === 0 && !hideAlone && (
-          <div className="banner info">
-            <span>You are the host. Copy the link \u00b7 people who open it wait until you admit them.</span>
-            <button type="button" onClick={() => void copyLink()}>
-              Copy link
-            </button>
-            <button type="button" className="textbtn" onClick={() => setHideAlone(true)}>
-              Hide
-            </button>
-          </div>
-        )}
-        {peers.length > 0 && !hideTip && (
-          <div className="banner info">
-            <span>Use headphones if two meeting windows are on this computer, or the microphones will echo.</span>
-            <button
-              type="button"
-              onClick={() => {
-                sessionStorage.setItem('lc-tip', '1');
-                setHideTip(true);
-              }}
-            >
-              Got it
-            </button>
-          </div>
-        )}
-        {ask && (
-          <div className="banner ask">
-            <span>
-              {ask.fromName} is asking you to turn your {ask.kind === 'mic' ? 'microphone' : 'camera'} on.
-            </span>
-            <button
-              type="button"
-              className="primary slim"
-              onClick={() => {
-                if (ask.kind === 'mic') {
-                  if (!micOn) toggleMic();
-                } else if (!camOn) {
-                  toggleCam();
-                }
-                dismissAsk();
-              }}
-            >
-              Turn it on
-            </button>
-            <button type="button" onClick={dismissAsk}>
-              Not now
-            </button>
-          </div>
-        )}
-      </div>
+      {meetingLocked && (
+        <p className="meet-locked-bar phone-only" role="status">
+          Meeting locked · new people wait
+        </p>
+      )}
+
+      {sharingPick && (
+        <div className="share-pending-banner" role="status">
+          <span>Choose what to share in the browser window?</span>
+          <button
+            type="button"
+            className="secondary slim"
+            onClick={() => {
+              setSharingPick(false);
+              toast('Screen share canceled', { key: 'share-cancel' });
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+      )}
 
       <div className="room-body">
         <div className="stage" ref={stageRef}>
-          {screens.length > 0 ? (
+          {noticeKind && !boardOpen && (
+            <div className="notice-row" role="status">
+              {noticeCounter && (
+                <span className="notice-counter" aria-label={`Notice ${noticeCounter}`}>
+                  {noticeCounter}
+                </span>
+              )}
+              {noticeKind === 'ask' && ask && (
+                <div className="banner ask">
+                  <span>
+                    {ask.fromName} is asking you to turn your {ask.kind === 'mic' ? 'microphone' : 'camera'} on.
+                  </span>
+                  <button
+                    type="button"
+                    className="primary slim"
+                    onClick={() => {
+                      if (ask.kind === 'mic') {
+                        if (!micOn) toggleMic();
+                      } else if (!camOn) {
+                        toggleCam();
+                      }
+                      dismissAsk();
+                    }}
+                  >
+                    Turn it on
+                  </button>
+                  <button type="button" onClick={dismissAsk}>
+                    Not now
+                  </button>
+                </div>
+              )}
+              {noticeKind === 'admit' && (
+                <AdmitBanner
+                  waiting={waiting}
+                  onReview={() => setPanel('people')}
+                  onAdmit={admit}
+                  onDeny={deny}
+                  onAdmitAll={() => waiting.forEach((person) => admit(person.id))}
+                  onDenyAll={() => waiting.forEach((person) => deny(person.id))}
+                />
+              )}
+              {noticeKind === 'share' && (
+                <div className="banner share">
+                  <span>{sharers.join('. ')}.</span>
+                  {sharing && (
+                    <button type="button" onClick={() => void toggleShare()}>
+                      Stop sharing
+                    </button>
+                  )}
+                </div>
+              )}
+              {noticeKind === 'hear' && (
+                <div className="banner ask">
+                  <span>Click to hear other people.</span>
+                  <button
+                    type="button"
+                    className="primary slim"
+                    onClick={() => {
+                      setHear(false);
+                      document.querySelectorAll('audio').forEach((element) => void element.play().catch(() => undefined));
+                    }}
+                  >
+                    Hear people
+                  </button>
+                </div>
+              )}
+              {noticeKind === 'host-tip' && (
+                <div className="banner info">
+                  <span>You are the host. Copy the link · people who open it wait until you admit them.</span>
+                  <button type="button" onClick={() => void copyLink()}>
+                    Copy link
+                  </button>
+                  <button type="button" className="textbtn" onClick={() => setHideAlone(true)}>
+                    Hide
+                  </button>
+                </div>
+              )}
+              {noticeKind === 'headphone' && (
+                <div className="banner info">
+                  <span>Use headphones if two meeting windows are on this computer, or the microphones will echo.</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      sessionStorage.setItem('lc-tip', '1');
+                      setHideTip(true);
+                    }}
+                  >
+                    Got it
+                  </button>
+                </div>
+              )}
+              {noticeKind === 'facecast' && (
+                <div className="banner info">
+                  <span>
+                    A host or co-host is directing FaceCast · only their chosen faces go into the marketing cut.
+                  </span>
+                </div>
+              )}
+              {noticeKind === 'server' && serverMessage && <div className="banner warn">{serverMessage}</div>}
+            </div>
+          )}
+          {boardOpen ? (
+            <Whiteboard
+              myId={myId}
+              name={name}
+              isHost={isHost || isCoHost}
+              objects={boardObjects}
+              meta={boardMeta}
+              cursors={boardCursors}
+              live={boardLive}
+              canDraw={!boardMeta.hostOnly || isHost || isCoHost}
+              filmstrip={<div className="strip wb-people">{cameras.map((tile) => renderTile(tile))}</div>}
+              onOp={sendBoardOp}
+              onLive={sendBoardLive}
+              onCursor={sendBoardCursor}
+              onMeta={sendBoardMeta}
+              onSave={(blob) => {
+                const url = URL.createObjectURL(blob);
+                setBoardEvents((events) => [
+                  {
+                    id: `board-${Date.now()}`,
+                    ts: Date.now(),
+                    kind: 'board',
+                    text: `${name} saved the whiteboard`,
+                  },
+                  ...events,
+                ]);
+                toast('Whiteboard saved to Catch-Up');
+                URL.revokeObjectURL(url);
+              }}
+              onClose={() => setBoardOpen(false)}
+            />
+          ) : screens.length > 0 ? (
             <div className="present">
-              <div className={screens.length > 1 ? 'present-main split' : 'present-main'}>{screens.map(renderTile)}</div>
-              <div className="strip">{cameras.map(renderTile)}</div>
+              <div className={screens.length > 1 ? 'present-main split' : 'present-main'}>
+                {screens.map((tile) => renderTile(tile))}
+              </div>
+              <div className="strip">{cameras.map((tile) => renderTile(tile))}</div>
+            </div>
+          ) : mobileFocus ? (
+            <div className="meet-mobile-stage">
+              <div className="meet-mobile-main">{renderTile(mobileMainTile, 'main')}</div>
+              {mobilePipTile ? <div className="meet-mobile-pip">{renderTile(mobilePipTile, 'pip')}</div> : null}
             </div>
           ) : layout === 'grid' || cameras.length < 2 ? (
-            <div className={gridClass(cameras.length)}>{cameras.map(renderTile)}</div>
+            <div
+              className={gridClass(cameras.length)}
+              data-aspect={frame.aspect}
+              style={{ ['--tile-aspect' as string]: aspectCss(frame.aspect) || '16 / 9', ['--tile-ar' as string]: String(frame.aspect === '4:3' ? 4 / 3 : frame.aspect === '1:1' ? 1 : frame.aspect === '9:16' ? 9 / 16 : 16 / 9) }}
+            >
+              {cameras.map((tile) => renderTile(tile))}
+            </div>
           ) : (
             <div className={layout === 'sidebar' ? 'sidebar' : 'speaker'}>
               <div className="present-main">{renderTile(mainTile)}</div>
-              <div className="strip">{otherTiles.map(renderTile)}</div>
+              <div className="strip">{otherTiles.map((tile) => renderTile(tile))}</div>
             </div>
           )}
-          {caption && (
-            <div className="captions" aria-live="polite">
-              <strong>{caption.name}</strong>
-              <span>{caption.text}</span>
+          {(captionsOn || caption) && (
+            <div className={caption ? 'captions' : 'captions is-waiting'} aria-live="polite">
+              {caption ? (
+                <>
+                  <strong>{caption.name}</strong>
+                  <span>{caption.text}</span>
+                </>
+              ) : (
+                <span>
+                  {!captionSupported
+                    ? 'Captions need Chrome or Edge on HTTPS.'
+                    : !micOn
+                      ? 'Turn on your mic so captions can hear you.'
+                      : captionError === 'denied'
+                        ? 'Allow microphone access to use captions.'
+                        : 'Listening…'}
+                </span>
+              )}
             </div>
           )}
           {bursts.length > 0 && (
@@ -1447,7 +1925,7 @@ async function toggleRecord() {
                     ) : (
                       <article key={message.id} className={message.from === myId ? 'bubble mine' : 'bubble'}>
                         {message.from !== myId && <strong>{message.name}</strong>}
-                        <p>{message.text}</p>
+                        <ChatBubbleBody message={message} />
                         <time>
                           {new Date(message.ts).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
                         </time>
@@ -1456,16 +1934,62 @@ async function toggleRecord() {
                   )}
                   <div ref={chatEnd} />
                 </div>
+                {pendingFile && (
+                  <p className="chat-pending-file">
+                    <span className="attach-chip">
+                      {pendingFile.name}
+                      <button type="button" className="textbtn" aria-label="Remove attachment" onClick={() => setPendingFile(null)}>
+                        ×
+                      </button>
+                    </span>
+                  </p>
+                )}
+                {chatEmojiOpen && (
+                  <div className="chat-emoji" role="listbox" aria-label="Emoji">
+                    {CHAT_EMOJIS.map((emoji) => (
+                      <button
+                        key={emoji}
+                        type="button"
+                        onClick={() => {
+                          setChatText((value) => `${value}${emoji}`);
+                          chatInput.current?.focus();
+                        }}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <form className="composer" onSubmit={sendMessage}>
-                  <input
-                    ref={chatInput}
-                    value={chatText}
-                    maxLength={2000}
-                    placeholder="Message everyone"
-                    aria-label="Message everyone"
-                    onChange={(event) => setChatText(event.target.value)}
-                  />
-                  <button type="submit" className="primary slim" disabled={!chatText.trim()}>
+                  <div className="composer-bar">
+                    <button
+                      type="button"
+                      className="composer-ico"
+                      aria-label="Insert emoji"
+                      aria-expanded={chatEmojiOpen}
+                      onClick={() => setChatEmojiOpen((value) => !value)}
+                    >
+                      <IconSmile />
+                    </button>
+                    <button
+                      type="button"
+                      className="composer-ico"
+                      aria-label="Attach a file"
+                      onClick={() => chatFileInput.current?.click()}
+                    >
+                      +
+                    </button>
+                    <input ref={chatFileInput} type="file" className="sr-only" onChange={onChatFilePick} />
+                    <input
+                      ref={chatInput}
+                      value={chatText}
+                      maxLength={2000}
+                      placeholder="Message everyone"
+                      aria-label="Message everyone"
+                      onChange={(event) => setChatText(event.target.value)}
+                    />
+                  </div>
+                  <button type="submit" className="primary slim" disabled={!chatText.trim() && !pendingFile}>
                     Send
                   </button>
                 </form>
@@ -1493,6 +2017,23 @@ async function toggleRecord() {
                 onKick={kick}
                 onAdmit={admit}
                 onDeny={deny}
+                onDenyAll={() => waiting.forEach((person) => deny(person.id))}
+                onMuteAll={() => {
+                  peers.filter((peer) => peer.micOn).forEach((peer) => moderate(peer.id, 'mute-mic'));
+                }}
+                onCopyInvite={() => void copyLink()}
+                handOrderIds={[...handRankByPeer.entries()]
+                  .sort((a, b) => a[1] - b[1])
+                  .map(([id]) => id)}
+                onLowerAll={() => {
+                  if (hand) setHand(false);
+                  const others = peers.filter((peer) => peer.hand);
+                  if (others.length) {
+                    toast('Only each person can lower their own hand.');
+                  }
+                }}
+                meetingLocked={meetingLocked}
+                onLock={() => setMeetingLock(!meetingLocked)}
                 onCohost={setCohost}
               />
             )}
@@ -1519,7 +2060,55 @@ async function toggleRecord() {
         <RemoteAudio key={peer.id} stream={peer.audio} sinkId={settings.speakerId} onBlocked={() => setHear(true)} />
       ))}
 
-      {popover && !dialog && (
+      <MeetingPip
+        people={[
+          {
+            id: myId,
+            name,
+            stream,
+            showVideo: camOn && Boolean(stream?.getVideoTracks().length),
+            speaking: loudest === myId,
+            you: true,
+          },
+          ...peers.map((peer) => ({
+            id: peer.id,
+            name: peer.name,
+            stream: peer.camera,
+            showVideo: peer.camOn && Boolean(peer.camera?.getVideoTracks().length),
+            speaking: loudest === peer.id,
+            you: false,
+          })),
+        ]}
+        micOn={micOn}
+        camOn={camOn}
+        hand={hand}
+        autoFloat={frame.autoFloat}
+        docked={docked}
+        panelOpen={Boolean(panel)}
+        boardOpen={boardOpen}
+        mobile={viewportMobile}
+        onMic={() => toggleMic()}
+        onCam={() => toggleCam()}
+        onHand={() => setHand((value) => !value)}
+        onLeave={() => openDialog('leave')}
+        onBack={() => {
+          if (docked) onRestore?.();
+          else setPanel(null);
+        }}
+        onAutoFloat={(value) => patchFrame({ autoFloat: value })}
+        gestureNeeded={!pipGesture}
+        onGesture={() => {
+          sessionStorage.setItem('LetsConnect.pipGesture', '1');
+          setPipGesture(true);
+        }}
+        onStatus={(text) => toast(text)}
+        openSignal={pipNonce}
+      />
+
+      {popover &&
+        !dialog &&
+        popover !== 'top' &&
+        !(viewportMobile && (popover === 'more' || popover === 'look')) && (
         <button type="button" className="backdrop" aria-label="Close menu" onClick={() => setPopover(null)} />
       )}
 
@@ -1530,6 +2119,7 @@ async function toggleRecord() {
             shortcut="M"
             danger={!micOn || !hasMic}
             pressed={micOn && hasMic}
+            className={!hasMic ? 'nodevice' : undefined}
             onClick={() => toggleMic()}
           >
             {micOn && hasMic ? <IconMic /> : <IconMicOff />}
@@ -1539,11 +2129,13 @@ async function toggleRecord() {
             shortcut="V"
             danger={!camOn || !hasCam}
             pressed={camOn && hasCam}
+            className={!hasCam ? 'nodevice' : undefined}
             onClick={() => toggleCam()}
           >
             {camOn && hasCam ? <IconCam /> : <IconCamOff />}
           </Cmd>
           <Cmd
+            className="desk-only"
             label={sharing ? 'Stop screen' : 'Screen'}
             shortcut="S"
             live={sharing}
@@ -1554,14 +2146,13 @@ async function toggleRecord() {
           </Cmd>
           <Cmd
             className="phone-only"
-            label={hand ? 'Lower' : 'Hand'}
-            shortcut="H"
-            live={hand}
-            pressed={hand}
-            tone={hand ? 'hand' : undefined}
-            onClick={() => setHand((value) => !value)}
+            label={unread ? `Chat ${unread}` : 'Chat'}
+            shortcut="C"
+            live={panel === 'chat'}
+            badge={unread}
+            onClick={() => togglePanel('chat')}
           >
-            <IconHand />
+            <IconChat />
           </Cmd>
         </div>
         <div className="cgroup meet-tools desk-only">
@@ -1604,13 +2195,6 @@ async function toggleRecord() {
             live={captionsOn}
             pressed={captionsOn}
             onClick={() => {
-              if (!captionsOn && !captionSupported) {
-                toast('Live captions need Chrome or Edge on HTTPS.');
-                return;
-              }
-              if (!captionsOn && !micOn) {
-                toast('Turn your mic on so captions can hear you.');
-              }
               setCaptionsOn((value) => !value);
             }}
           >
@@ -1626,7 +2210,7 @@ async function toggleRecord() {
             >
               <IconLook />
             </Cmd>
-            {popover === 'look' && (
+            {popover === 'look' && !viewportMobile && (
               <LookMenu
                 value={settings.background}
                 status={look.status}
@@ -1636,6 +2220,15 @@ async function toggleRecord() {
           </div>
         </div>
         <div className="cgroup meet-panels">
+          <Cmd
+            className="desk-only"
+            label="Whiteboard"
+            shortcut="W"
+            live={boardOpen}
+            onClick={() => setBoardOpen((value) => !value)}
+          >
+            <IconBoard />
+          </Cmd>
           <Cmd
             className="desk-only"
             label={unread ? `Chat ${unread}` : 'Chat'}
@@ -1649,8 +2242,8 @@ async function toggleRecord() {
           <Cmd
             className="desk-only"
             label={`People ${peers.length + 1}`}
-            shortcut="P"
             live={panel === 'people'}
+            badge={canModerate && waiting.length > 0 ? waiting.length : undefined}
             onClick={() => togglePanel('people')}
           >
             <IconPeople />
@@ -1660,65 +2253,56 @@ async function toggleRecord() {
               <IconMore />
             </Cmd>
             {popover === 'more' && (
-              <div className="popover more-pop" role="menu">
-                {canRecord && (
-                  <>
-                    <p className="more-label">Record</p>
-                    <MenuButton
-                      icon={<IconRecord />}
-                      title={recording ? 'Stop & download ZIP' : 'FaceCast'}
-                      hint={recording ? '4 videos: host, room, screen, chat' : 'Record 4 marketing cuts'}
-                      danger={recording}
-                      onClick={() => {
-                        setPopover(null);
-                        void toggleRecord();
-                      }}
-                    />
-                    {recording && (
-                      <MenuButton
-                        icon={<IconPeople />}
-                        title="Edit cast"
-                        hint="Who appears in the file"
-                        onClick={() => {
-                          setPopover(null);
-                          openFaceCast();
-                        }}
-                      />
-                    )}
-                  </>
+              <div className="popover more-pop meet-more-pop desk-only" role="menu">
+                <p className="more-label">Collaborate</p>
+                {canModerate && (
+                  <MenuButton
+                    icon={<IconPoll />}
+                    title={poll ? 'New poll' : 'Polls'}
+                    hint="Quick vote"
+                    onClick={() => {
+                      setPopover(null);
+                      openDialog('poll');
+                    }}
+                  />
                 )}
-                <p className="more-label phone-only">Quick</p>
                 <MenuButton
-                  className="phone-only"
-                  icon={<IconSmile />}
-                  title="React"
-                  hint="Send a reaction"
-                  onClick={() => {
-                    setPopover('react');
-                  }}
-                />
-                <MenuButton
-                  className="phone-only"
-                  icon={<IconCaptions />}
-                  title={captionsOn ? 'Captions on' : 'Captions'}
-                  hint="Live captions"
+                  icon={<IconBoard />}
+                  title="Whiteboard"
+                  hint="W"
                   onClick={() => {
                     setPopover(null);
-                    if (!captionsOn && !captionSupported) {
-                      toast('Live captions need Chrome or Edge on HTTPS.');
-                      return;
-                    }
-                    setCaptionsOn((value) => !value);
+                    setBoardOpen(true);
                   }}
                 />
                 <MenuButton
-                  className="phone-only"
-                  icon={<IconLook />}
-                  title="Background"
-                  hint="Blur or replace"
-                  onClick={() => setPopover('look')}
+                  icon={<IconBreakout />}
+                  title="Breakouts"
+                  soon
+                  className="soon"
+                  onClick={() => toast('Breakout rooms are coming soon.')}
                 />
-                <p className="more-label">View</p>
+                <p className="more-label">Meeting</p>
+                {canRecord && (
+                  <MenuButton
+                    icon={<IconRecord />}
+                    title="Recording / FaceCast"
+                    hint={recording ? 'Recording now' : 'Start a FaceCast cut'}
+                    onClick={() => {
+                      setPopover(null);
+                      void toggleRecord();
+                    }}
+                  />
+                )}
+                <MenuButton
+                  icon={<IconInfo />}
+                  title="Meeting info"
+                  hint="Code & invite link"
+                  onClick={() => {
+                    setPopover(null);
+                    openDialog('details');
+                  }}
+                />
                 <MenuButton
                   icon={<IconExpand />}
                   title="Full screen"
@@ -1730,36 +2314,13 @@ async function toggleRecord() {
                 />
                 <MenuButton
                   icon={<IconPip />}
-                  title="Pop-out video"
-                  hint="Keep me on top"
+                  title="Floating window"
+                  hint="P"
                   onClick={() => {
                     setPopover(null);
-                    void popOut();
+                    popOut();
                   }}
                 />
-                {(canModerate || poll) && <p className="more-label">Meeting</p>}
-                {canModerate && (
-                  <MenuButton
-                    icon={<IconPoll />}
-                    title={poll ? 'New poll' : 'Start poll'}
-                    hint="Quick vote"
-                    onClick={() => {
-                      setPopover(null);
-                      openDialog('poll');
-                    }}
-                  />
-                )}
-                {poll && (
-                  <MenuButton
-                    icon={<IconPoll />}
-                    title={pollHidden ? 'Show poll' : 'Hide poll'}
-                    hint={poll.question}
-                    onClick={() => {
-                      setPollHidden((value) => !value);
-                      setPopover(null);
-                    }}
-                  />
-                )}
                 <p className="more-label">Settings</p>
                 <MenuButton
                   icon={<IconGear />}
@@ -1778,23 +2339,6 @@ async function toggleRecord() {
                     setPopover(null);
                     openDialog('shortcuts');
                   }}
-                />
-                {canModerate && (
-                  <MenuButton
-                    icon={<IconInfo />}
-                    title="Meeting info"
-                    hint="Code & invite link"
-                    onClick={() => {
-                      setPopover(null);
-                      openDialog('details');
-                    }}
-                  />
-                )}
-                <MenuButton
-                  icon={<IconBell />}
-                  title={settings.sounds ? 'Sounds on' : 'Sounds off'}
-                  hint="Join & chat alerts"
-                  onClick={() => onSettings({ ...settings, sounds: !settings.sounds })}
                 />
               </div>
             )}
@@ -1820,6 +2364,145 @@ async function toggleRecord() {
         </div>
       </footer>
 
+      {popover === 'look' && viewportMobile && (
+        <>
+          <button type="button" className="meet-sheet-backdrop" aria-label="Close look menu" onClick={() => setPopover(null)} />
+          <div className="meet-more-sheet" role="dialog" aria-label="Background">
+            <header className="meet-more-sheet-head">
+              <strong>Background</strong>
+              <button type="button" className="textbtn" onClick={() => setPopover(null)}>
+                Close
+              </button>
+            </header>
+            <LookMenu
+              value={settings.background}
+              status={look.status}
+              onChange={(background) => onSettings({ ...settings, background })}
+            />
+          </div>
+        </>
+      )}
+
+      {popover === 'more' && (
+        <>
+          <button type="button" className="meet-sheet-backdrop phone-only" aria-label="Close menu" onClick={() => setPopover(null)} />
+          <div className="meet-more-sheet phone-only" role="menu" aria-label="More options">
+            <header className="meet-more-sheet-head">
+              <strong>More</strong>
+              <button type="button" className="textbtn" onClick={() => setPopover(null)}>
+                Close
+              </button>
+            </header>
+            <div className="meet-more-reactions" aria-label="Reactions">
+              {reactions.map(([emoji, label]) => (
+                <button
+                  key={emoji}
+                  type="button"
+                  aria-label={label}
+                  onClick={() => {
+                    sendReaction(emoji);
+                    setPopover(null);
+                  }}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+            <div className="meet-tool-grid">
+              <button
+                type="button"
+                onClick={() => {
+                  setHand((value) => !value);
+                  setPopover(null);
+                }}
+              >
+                <IconHand />
+                <span>{hand ? 'Lower' : 'Hand'}</span>
+              </button>
+              <button type="button" onClick={() => void toggleShare()}>
+                <IconShare />
+                <span>{sharing ? 'Stop' : 'Share'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setCaptionsOn((value) => !value);
+                  setPopover(null);
+                }}
+              >
+                <IconCaptions />
+                <span>{captionsOn ? 'Captions on' : 'Captions'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPopover('look');
+                }}
+              >
+                <IconLook />
+                <span>Look</span>
+              </button>
+              <button type="button" onClick={() => togglePanel('people')}>
+                <IconPeople />
+                <span>People</span>
+              </button>
+              {canModerate && (
+                <button type="button" onClick={() => openDialog('poll')}>
+                  <IconPoll />
+                  <span>Polls</span>
+                </button>
+              )}
+              {canRecord && (
+                <button type="button" onClick={() => void toggleRecord()}>
+                  <IconRecord />
+                  <span>FaceCast</span>
+                </button>
+              )}
+              <button type="button" onClick={() => openDialog('settings')}>
+                <IconGear />
+                <span>Devices</span>
+              </button>
+              <button type="button" onClick={() => openDialog('shortcuts')}>
+                <IconKeys />
+                <span>Keys</span>
+              </button>
+              <button type="button" onClick={() => void toggleFullscreen()}>
+                <IconExpand />
+                <span>Full</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPopover(null);
+                  setBoardOpen(true);
+                }}
+              >
+                <IconBoard />
+                <span>Board</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setPopover(null);
+                  popOut();
+                }}
+              >
+                <IconPip />
+                <span>Float</span>
+              </button>
+              <button type="button" onClick={() => toast('Breakout rooms are coming soon.')}>
+                <IconBreakout />
+                <span>Rooms</span>
+              </button>
+              <button type="button" onClick={() => openDialog('details')}>
+                <IconInfo />
+                <span>Info</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       <div className="toasts" aria-live="polite">
         {toasts.map((item) => (
           <div key={item.id} className="toast">
@@ -1829,37 +2512,49 @@ async function toggleRecord() {
       </div>
 
       {dialog === 'leave' && (
-        <div className="modal-back" role="presentation" onClick={() => setDialog(null)}>
+        <div className="modal-back leave-modal-back" role="presentation" onClick={() => setDialog(null)}>
           <div
-            className="modal leave-dialog"
+            className="leave-dialog"
             role="dialog"
-            aria-label="Leave meeting"
+            aria-labelledby="leave-dialog-title"
+            aria-describedby="leave-dialog-copy"
             onClick={(event) => event.stopPropagation()}
           >
-            <div className="leave-confirm-icon" aria-hidden="true">
+            <div className="leave-dialog-icon" aria-hidden="true">
               <IconLeave />
             </div>
-            <div className="leave-confirm-copy">
-              <strong>Leave meeting?</strong>
-              <p>You can rejoin anytime with the same link.</p>
+            <div className="leave-dialog-copy">
+              <strong id="leave-dialog-title">Leave meeting?</strong>
+              <p id="leave-dialog-copy">You can rejoin anytime with the same link.</p>
             </div>
-            <div className="leave-confirm-actions">
-              <button type="button" className="secondary leave-stay" onClick={() => setDialog(null)}>
+            <div className="leave-dialog-actions">
+              <button type="button" className="leave-stay" onClick={() => setDialog(null)}>
                 Stay
               </button>
               <button
                 type="button"
-                className="primary danger-btn leave-go"
+                className="leave-go"
                 onClick={() => {
                   setDialog(null);
-                  streamRef.current?.getTracks().forEach((track) => track.stop());
-                  screenRef.current?.getTracks().forEach((track) => track.stop());
-                  onLeave();
+                  finishLeave();
                 }}
               >
                 Leave
               </button>
             </div>
+            {isHost ? (
+              <button
+                type="button"
+                className="leave-end-all"
+                onClick={() => {
+                  setDialog(null);
+                  endMeeting();
+                  finishLeave();
+                }}
+              >
+                End meeting for everyone
+              </button>
+            ) : null}
           </div>
         </div>
       )}
@@ -1872,7 +2567,7 @@ async function toggleRecord() {
         />
       )}
       {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
-      {dialog === 'details' && canModerate && (
+      {dialog === 'details' && (
         <DetailsDialog
           code={code}
           isHost={isHost}
@@ -1943,6 +2638,7 @@ function Cmd({
   tone,
   badge,
   className,
+  title,
   onClick,
   children,
 }: {
@@ -1954,20 +2650,32 @@ function Cmd({
   tone?: 'hand';
   badge?: number;
   className?: string;
+  title?: string;
   onClick: () => void;
   children: ReactNode;
 }) {
+  const tip = title || (shortcut ? `${label} (${shortcut})` : label);
   return (
     <button
       type="button"
       className={cx('cmd', danger && 'danger', live && 'live', tone === 'hand' && 'hand-live', className)}
       aria-pressed={pressed}
       aria-keyshortcuts={shortcut}
-      title={shortcut ? `${label} (${shortcut})` : label}
-      onClick={onClick}
+      data-tip={tip}
+      onClick={(event) => {
+        event.currentTarget.blur();
+        onClick();
+      }}
+      onPointerEnter={(event) => event.currentTarget.setAttribute('data-tip-active', '')}
+      onFocus={(event) => event.currentTarget.setAttribute('data-tip-active', '')}
+      onPointerLeave={(event) => {
+        event.currentTarget.removeAttribute('data-tip-active');
+        event.currentTarget.blur();
+      }}
+      onBlur={(event) => event.currentTarget.removeAttribute('data-tip-active')}
     >
       {children}
-      <span>{label}</span>
+      <span className="cmd-label">{label}</span>
       {badge ? <em className="badge">{badge}</em> : null}
     </button>
   );
@@ -1978,6 +2686,7 @@ function MenuButton({
   title,
   hint,
   danger,
+  soon,
   className,
   onClick,
 }: {
@@ -1985,6 +2694,7 @@ function MenuButton({
   title: string;
   hint?: string;
   danger?: boolean;
+  soon?: boolean;
   className?: string;
   onClick: () => void;
 }) {
@@ -1995,7 +2705,11 @@ function MenuButton({
       </span>
       <span className="menu-copy">
         <strong>{title}</strong>
-        {hint ? <small>{hint}</small> : null}
+        {soon ? (
+          <small className="soon-badge">Coming soon</small>
+        ) : hint ? (
+          <small>{hint}</small>
+        ) : null}
       </span>
     </button>
   );
@@ -2076,39 +2790,109 @@ function IconInfo() {
   );
 }
 
-function IconBell() {
+function IconBoard() {
   return (
     <MenuSvg>
-      <path d="M7 10a5 5 0 0 1 10 0c0 4 1.5 5 1.5 5H5.5S7 14 7 10z" />
-      <path d="M10 18a2 2 0 0 0 4 0" />
+      <rect x="4" y="5" width="16" height="14" rx="2" />
+      <path d="M8 9h8M8 13h5" />
     </MenuSvg>
+  );
+}
+
+function IconBreakout() {
+  return (
+    <MenuSvg>
+      <rect x="3" y="4" width="8" height="8" rx="1.5" />
+      <rect x="13" y="4" width="8" height="8" rx="1.5" />
+      <rect x="8" y="14" width="8" height="6" rx="1.5" />
+    </MenuSvg>
+  );
+}
+
+function ChatBubbleBody({ message }: { message: ChatMessage }) {
+  const links = urlsInText(message.text);
+  return (
+    <>
+      {message.text ? <p>{message.text}</p> : null}
+      {links.map((url) => (
+        <a key={url} className="link-preview" href={url} target="_blank" rel="noreferrer noopener">
+          <span className="link-preview-host">{linkHost(url)}</span>
+          <span className="link-preview-url">{url}</span>
+        </a>
+      ))}
+      {message.attachment ? (
+        message.attachment.mime.startsWith('image/') ? (
+          <img className="chat-attach-img" src={message.attachment.data} alt={message.attachment.name} />
+        ) : (
+          <a className="chat-file-card" download={message.attachment.name} href={message.attachment.data}>
+            <span className="chat-file-icon" aria-hidden="true">
+              📎
+            </span>
+            <span className="chat-file-meta">
+              <strong>{message.attachment.name}</strong>
+              <small>Tap to download</small>
+            </span>
+          </a>
+        )
+      ) : null}
+    </>
   );
 }
 
 function Tile({
   tile,
   role,
+  layoutRole,
+  handRank,
   pinned,
   localRef,
   lookCanvas,
   casted,
   slow,
+  trouble,
+  fit = 'contain',
+  portrait = false,
+  selfZoom = 1,
+  selfPanX = 0.5,
+  selfPanY = 0.5,
+  onFit,
+  onSelfCrop,
   onPin,
   onRetry,
+  onCopyInvite,
 }: {
   tile: TileModel;
   role: string;
+  layoutRole?: 'main' | 'pip';
+  handRank?: number | null;
   pinned: boolean;
   localRef?: RefObject<HTMLVideoElement | null>;
   lookCanvas?: HTMLCanvasElement | null;
   casted?: boolean;
   slow: boolean;
+  trouble?: boolean;
+  fit?: TileFit;
+  portrait?: boolean;
+  selfZoom?: number;
+  selfPanX?: number;
+  selfPanY?: number;
+  onFit?: (fit: TileFit) => void;
+  onSelfCrop?: (zoom: number, x: number, y: number) => void;
   onPin: () => void;
   onRetry: () => void;
+  onCopyInvite: () => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const slotRef = useRef<HTMLDivElement>(null);
+  const blurRef = useRef<HTMLVideoElement>(null);
+  const [menu, setMenu] = useState(false);
+  const press = useRef(0);
   const localCamera = tile.you && tile.kind === 'camera';
+  const cropStyle = {
+    objectFit: (portrait ? 'contain' : fit) as TileFit,
+    objectPosition: faceObjectPosition(selfPanX, selfPanY),
+    transform: `scale(${selfZoom})`,
+  };
   const letters = initials(tile.name.replace(/'s screen$/, ''));
   const color = colorFor(tile.you ? tile.name : tile.name);
   const trackKey = tile.stream?.getTracks().map((track) => track.id).join(',') ?? '';
@@ -2117,6 +2901,11 @@ function Tile({
       const parent = slotRef.current;
       if (!parent) return;
       if (localRef) localRef.current = getPreviewVideo();
+      const blur = blurRef.current;
+      if (blur) {
+        blur.srcObject = tile.stream;
+        void blur.play().catch(() => undefined);
+      }
       return mountPreview(parent, tile.stream, {
         mirror: tile.mirrored,
         recordName: tile.name,
@@ -2132,6 +2921,11 @@ function Tile({
     if (!element) return;
     element.srcObject = tile.stream;
     if (tile.showVideo) void element.play().catch(() => undefined);
+    const blur = blurRef.current;
+    if (blur) {
+      blur.srcObject = tile.stream;
+      void blur.play().catch(() => undefined);
+    }
     return undefined;
   }, [color, letters, localCamera, localRef, lookCanvas, role, tile.mirrored, tile.name, tile.peerId, tile.showVideo, tile.stream, trackKey]);
 
@@ -2165,10 +2959,54 @@ function Tile({
           : 'Connecting\u2026'
       : '';
 
+  const connectStep =
+    tile.connection === 'failed'
+      ? 3
+      : tile.connection === 'disconnected'
+        ? 3
+        : slow
+          ? 2
+          : 1;
+
   return (
-    <article className={cx('tile', tile.speaking && 'speaking', pinned && 'pinned', casted && 'casted')}>
+    <article
+      className={cx(
+        'tile',
+        tile.speaking && 'speaking',
+        pinned && 'pinned',
+        casted && 'casted',
+        portrait && 'has-blur-fill',
+        layoutRole === 'pip' && 'meet-pip-tile',
+        layoutRole === 'main' && 'meet-main-tile',
+      )}
+      onPointerDown={() => {
+        press.current = window.setTimeout(() => setMenu(true), 420);
+      }}
+      onPointerUp={() => window.clearTimeout(press.current)}
+      onPointerLeave={() => window.clearTimeout(press.current)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu(true);
+      }}
+    >
+      {portrait && tile.showVideo && (
+        <video ref={blurRef} className="tile-blur" autoPlay muted playsInline aria-hidden="true" />
+      )}
       {localCamera ? (
-        <div className="local-slot" ref={slotRef} />
+        <div
+          className="local-slot"
+          ref={slotRef}
+          style={{
+            ['--tile-fit' as string]: portrait ? 'contain' : fit,
+            ['--tile-pos' as string]: faceObjectPosition(selfPanX, selfPanY),
+            ['--self-zoom' as string]: String(selfZoom),
+          }}
+          onPointerMove={(event) => {
+            if (!onSelfCrop || event.buttons !== 1) return;
+            const box = event.currentTarget.getBoundingClientRect();
+            onSelfCrop(selfZoom, Math.min(1, Math.max(0, (event.clientX - box.left) / box.width)), Math.min(1, Math.max(0, (event.clientY - box.top) / box.height)));
+          }}
+        />
       ) : (
         <video
           ref={ref}
@@ -2180,7 +3018,8 @@ function Tile({
           data-rec-off={tile.showVideo ? '0' : '1'}
           data-rec-color={color}
           data-rec-initials={letters}
-          className={cx('fit-contain', !tile.showVideo && 'is-off')}
+          className={cx(fit === 'cover' && !portrait ? 'fit-cover' : 'fit-contain', !tile.showVideo && 'is-off')}
+          style={cropStyle}
           autoPlay
           muted
           playsInline
@@ -2193,17 +3032,24 @@ function Tile({
       )}
       {tile.kind === 'screen' && !tile.showVideo && <p className="share-wait">Waiting for the screen\u2026</p>}
       {casted && <div className="castflag">In FaceCast</div>}
-      {(tile.hand || (tile.kind === 'camera' && !tile.micOn)) && (
+      {(tile.hand || (tile.kind === 'camera' && (!tile.micOn || !tile.showVideo))) && (
         <div className="tile-badges">
           {tile.kind === 'camera' && !tile.micOn && (
-            <div className="mute-badge" title="Muted" aria-label="Muted">
+            <div className="tile-chip muted-chip" title="Muted" aria-label="Muted">
               <IconMicOff />
+              <span>Muted</span>
+            </div>
+          )}
+          {tile.kind === 'camera' && !tile.showVideo && (
+            <div className="tile-chip camoff-chip" title="Camera off" aria-label="Camera off">
+              <IconCamOff />
+              <span>Camera off</span>
             </div>
           )}
           {tile.hand && (
             <div className="hand-badge" title="Hand raised" aria-label="Hand raised">
               <IconHand />
-              <span>Hand raised</span>
+              <span>{handRank ? `Hand raised ${ordinal(handRank)}` : 'Hand raised'}</span>
             </div>
           )}
         </div>
@@ -2223,12 +3069,32 @@ function Tile({
         </span>
       </div>
       {connecting && (
-        <div className="connline">
-          <span>{connecting}</span>
-          {(tile.connection === 'failed' || slow) && !tile.you && (
-            <button type="button" onClick={onRetry}>
-              Try again
-            </button>
+        <div className={cx('connline', trouble && 'connline-trouble', 'connline-panel')}>
+          <strong>{connecting}</strong>
+          <ol className="conn-steps" aria-label="Connection steps">
+            <li className={connectStep >= 1 ? 'done' : ''}>Finding peer route</li>
+            <li className={connectStep >= 2 ? 'done' : ''}>Checking network path</li>
+            <li className={connectStep >= 3 ? 'done' : ''}>Waiting for media</li>
+          </ol>
+          {!tile.you && (
+            <div className="connline-actions">
+              <button type="button" className="primary slim" onClick={onRetry}>
+                Retry now
+              </button>
+              <button type="button" className="secondary slim" onClick={onCopyInvite}>
+                Send rejoin link
+              </button>
+            </div>
+          )}
+          {trouble && (
+            <details className="net-tips">
+              <summary>Network tips</summary>
+              <ul>
+                <li>Switch to a stronger Wi?Fi or wired connection.</li>
+                <li>Close VPNs or firewalls that block peer video.</li>
+                <li>Ask them to refresh and rejoin the meeting.</li>
+              </ul>
+            </details>
           )}
         </div>
       )}
@@ -2236,6 +3102,43 @@ function Tile({
         <IconPin />
         {pinned ? 'Unpin' : 'Pin'}
       </button>
+      <button
+        type="button"
+        className="tile-frame-btn"
+        aria-label="Frame this video"
+        onClick={(event) => {
+          event.stopPropagation();
+          setMenu((value) => !value);
+        }}
+      >
+        Frame
+      </button>
+      {menu && (
+        <div className="tile-frame-menu" role="menu">
+          <button type="button" onClick={() => onFit?.('contain')}>
+            Fit (show full frame)
+          </button>
+          <button type="button" onClick={() => onFit?.('cover')}>
+            Fill (crop to tile)
+          </button>
+          {onSelfCrop && (
+            <label>
+              Zoom
+              <input
+                type="range"
+                min={1}
+                max={2}
+                step={0.05}
+                value={selfZoom}
+                onChange={(event) => onSelfCrop(Number(event.target.value), selfPanX, selfPanY)}
+              />
+            </label>
+          )}
+          <button type="button" onClick={() => setMenu(false)}>
+            Close
+          </button>
+        </div>
+      )}
     </article>
   );
 }
@@ -2306,6 +3209,13 @@ function PeopleList({
   onKick,
   onAdmit,
   onDeny,
+  onDenyAll,
+  onMuteAll,
+  onCopyInvite,
+  handOrderIds,
+  onLowerAll,
+  meetingLocked,
+  onLock,
   onCohost,
 }: {
   youName: string;
@@ -2329,8 +3239,16 @@ function PeopleList({
   onKick: (id: string) => void;
   onAdmit: (id: string) => void;
   onDeny: (id: string) => void;
+  onDenyAll: () => void;
+  onMuteAll: () => void;
+  onCopyInvite: () => void;
+  handOrderIds: string[];
+  onLowerAll: () => void;
+  meetingLocked: boolean;
+  onLock: () => void;
   onCohost: (id: string, on: boolean) => void;
 }) {
+  const [query, setQuery] = useState('');
   const rows = [
     {
       id: myId,
@@ -2345,8 +3263,38 @@ function PeopleList({
     ...peers.map((peer) => ({ ...peer, you: false })),
   ];
   const hands = rows.filter((row) => row.hand);
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? rows.filter((row) => row.name.toLowerCase().includes(needle))
+    : rows;
   return (
     <div className="people">
+      <div className="people-toolbar">
+        <input
+          type="search"
+          className="people-search"
+          placeholder="Search people"
+          aria-label="Search people"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <span className="people-count">{rows.length} in call</span>
+      </div>
+      <div className="people-host-actions">
+        <button type="button" className="secondary slim" onClick={onCopyInvite}>
+          Invite / copy link
+        </button>
+        {canModerate && (
+          <>
+            <button type="button" className="secondary slim" onClick={onMuteAll}>
+              Mute all
+            </button>
+            <button type="button" className="secondary slim" aria-pressed={meetingLocked} onClick={onLock}>
+              {meetingLocked ? 'Unlock meeting' : 'Lock meeting'}
+            </button>
+          </>
+        )}
+      </div>
       {canModerate && waiting.length > 0 && (
         <div className="admit-panel">
           <div className="admit-panel-head">
@@ -2375,23 +3323,39 @@ function PeopleList({
             ))}
           </ul>
           {waiting.length > 1 && (
-            <button type="button" className="admit-all" onClick={() => waiting.forEach((person) => onAdmit(person.id))}>
-              Admit everyone
-            </button>
+            <div className="admit-bulk">
+              <button type="button" className="admit-all" onClick={() => waiting.forEach((person) => onAdmit(person.id))}>
+                Admit all
+              </button>
+              <button type="button" className="admit-no admit-all" onClick={onDenyAll}>
+                Deny all
+              </button>
+            </div>
           )}
         </div>
       )}
       {hands.length > 0 && (
         <div className="hands">
-          <strong>Hands raised ({hands.length})</strong>
+          <div className="hands-head">
+            <strong>Raised hands ({hands.length})</strong>
+            <button type="button" className="textbtn" onClick={onLowerAll}>
+              Lower all
+            </button>
+          </div>
           <ul>
-            {hands.map((row) => (
-              <li key={row.id}>{row.name}</li>
+            {(handOrderIds.length
+              ? [...hands].sort((a, b) => handOrderIds.indexOf(a.id) - handOrderIds.indexOf(b.id))
+              : hands
+            ).map((row, index) => (
+              <li key={row.id}>
+                {row.name}
+                {handOrderIds.length > 1 ? ` · ${ordinal(index + 1)}` : ''}
+              </li>
             ))}
           </ul>
         </div>
       )}
-      {rows.map((row) => {
+      {visible.map((row) => {
         const role =
           row.id === hostId ? 'Host' : coHostIds.includes(row.id) ? 'Co-host' : row.you ? 'You' : 'Guest';
         const label = row.you ? `${row.name} (You)` : row.name;
@@ -2541,12 +3505,14 @@ function AdmitBanner({
   onAdmit,
   onDeny,
   onAdmitAll,
+  onDenyAll,
 }: {
   waiting: { id: string; name: string }[];
   onReview: () => void;
   onAdmit: (id: string) => void;
   onDeny: (id: string) => void;
   onAdmitAll: () => void;
+  onDenyAll: () => void;
 }) {
   const first = waiting[0];
   return (
@@ -2575,9 +3541,14 @@ function AdmitBanner({
             </button>
           </>
         ) : (
-          <button type="button" className="admit-yes" onClick={onAdmitAll}>
-            Admit all
-          </button>
+          <>
+            <button type="button" className="admit-yes" onClick={onAdmitAll}>
+              Admit all
+            </button>
+            <button type="button" className="admit-no" onClick={onDenyAll}>
+              Deny all
+            </button>
+          </>
         )}
         <button type="button" className="secondary slim" onClick={onReview}>
           Review

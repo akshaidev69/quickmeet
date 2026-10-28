@@ -15,3 +15,11 @@ android/captures
 android/.idea
 *.iml
 release/
+.cdp-storage.json
+.chunk-b64.ps1
+.chunks-home/
+.chunks-styles/
+.design-ref/
+.fix-good/
+.inject-chunks.ps1
+.inject-commit.ps1

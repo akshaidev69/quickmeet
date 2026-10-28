@@ -12,7 +12,12 @@ const jsonPath = path.join(dataDir, 'letsconnect.json');
 /** @typedef {{ id: string, userId: string, tokenHash: string, expiresAt: number, createdAt: number }} Session */
 
 function emptyStore() {
-  return { users: /** @type {User[]} */ ([]), meetings: /** @type {Meeting[]} */ ([]), sessions: /** @type {Session[]} */ ([]) };
+  return {
+    users: /** @type {User[]} */ ([]),
+    meetings: /** @type {Meeting[]} */ ([]),
+    sessions: /** @type {Session[]} */ ([]),
+    waitlist: { emails: /** @type {string[]} */ ([]) },
+  };
 }
 
 function ensureDir() {
@@ -237,4 +242,58 @@ export function deleteMeeting(userId, meetingId) {
 
 export function getUserRow(userId) {
   return findUserById(userId);
+}
+
+/** @returns {{ ok: boolean, already: boolean }} */
+export function addWaitlistEmail(email) {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized) return { ok: false, already: false };
+  if (!cache.waitlist?.emails) cache.waitlist = { emails: [] };
+  if (cache.waitlist.emails.includes(normalized)) {
+    return { ok: true, already: true };
+  }
+  mutate((store) => {
+    if (!store.waitlist?.emails) store.waitlist = { emails: [] };
+    store.waitlist.emails.push(normalized);
+    return store;
+  });
+  return { ok: true, already: false };
+}
+
+export function listOpenMeetingCodes() {
+  const codes = new Set();
+  for (const meeting of cache.meetings) {
+    if (!meeting.endedAt && meeting.code) codes.add(meeting.code);
+  }
+  return [...codes];
+}
+
+/** End all in-progress meetings for a room code; returns count updated. */
+export function endOpenMeetingsByCode(code) {
+  const normalized = String(code || '').trim().toLowerCase();
+  if (!normalized) return 0;
+  const now = Date.now();
+  let count = 0;
+  mutate((store) => {
+    for (const meeting of store.meetings) {
+      if (meeting.code === normalized && !meeting.endedAt) {
+        meeting.endedAt = now;
+        meeting.durationMs = Math.max(0, now - meeting.startedAt);
+        count++;
+      }
+    }
+    return store;
+  });
+  return count;
+}
+
+/** End open meetings for a code when the oldest open session exceeds minAgeMs. */
+export function endOpenMeetingsByCodeIfOlderThan(code, minAgeMs) {
+  const normalized = String(code || '').trim().toLowerCase();
+  if (!normalized) return 0;
+  const open = cache.meetings.filter((m) => m.code === normalized && !m.endedAt);
+  if (!open.length) return 0;
+  const oldest = Math.min(...open.map((m) => m.startedAt));
+  if (Date.now() - oldest < minAgeMs) return 0;
+  return endOpenMeetingsByCode(normalized);
 }
