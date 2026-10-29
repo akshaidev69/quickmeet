@@ -106,16 +106,6 @@ export async function startNativeScreenShare(): Promise<MediaStream> {
     stop: cleanup,
   };
 
-  // Meet-style: shrink into PiP so the user can browse other apps while sharing.
-  try {
-    const { enterPip } = await import('./nativeMeeting');
-    window.setTimeout(() => {
-      void enterPip();
-    }, 350);
-  } catch {
-    /* ignore */
-  }
-
   return stream;
 }
 

@@ -46,6 +46,7 @@ import {
   type RecordFile,
 } from '../lib/record';
 import { Whiteboard } from './Whiteboard';
+import { ComingSoonModal } from './ComingSoonModal';
 import { MeetingPip } from './MeetingPip';
 import { isNativeApp } from '../lib/native';
 import { pauseAutoFloat } from '../lib/pipGate';
@@ -76,7 +77,7 @@ type Props = {
 type Layout = 'grid' | 'speaker' | 'sidebar';
 type Panel = 'chat' | 'people' | 'catchup' | null;
 type Popover = 'react' | 'more' | 'look' | 'top' | null;
-type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | 'leave' | null;
+type Dialog = 'settings' | 'shortcuts' | 'details' | 'poll' | 'facecast' | 'recordings' | 'catchup' | 'receipt' | 'leave' | 'soon-rooms' | null;
 
 type TileModel = {
   key: string;
@@ -848,7 +849,12 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   useEffect(() => {
     if (boardMeta.open) {
       setBoardOpen((open) => {
-        if (!open) toast('Whiteboard is open for everyone', { key: 'wb-open', oncePerSession: true });
+        if (!open) {
+          toast(canModerate ? 'Whiteboard is open for everyone' : 'The host opened the whiteboard', {
+            key: 'wb-open',
+            oncePerSession: true,
+          });
+        }
         return true;
       });
       remoteBoardWasOpen.current = true;
@@ -858,7 +864,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       remoteBoardWasOpen.current = false;
       setBoardOpen(false);
     }
-  }, [boardMeta.open, boardTick, toast]);
+  }, [boardMeta.open, boardTick, canModerate, toast]);
 
   useEffect(() => {
     if (canModerate && waiting.length > 0) {
@@ -1026,25 +1032,38 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
 
     if (isNativeApp()) {
       const resume = pauseAutoFloat();
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        resume();
+      };
       setSharingPick(true);
+      let started = false;
       try {
         const { nativeScreenShareAvailable, startNativeScreenShare } = await import('../lib/nativeScreenShare');
         if (await nativeScreenShareAvailable()) {
           const display = await startNativeScreenShare();
-          display.getVideoTracks()[0]?.addEventListener('ended', () => clearScreenShare(display));
+          display.getVideoTracks()[0]?.addEventListener('ended', () => {
+            release();
+            clearScreenShare(display);
+          });
           setScreenStream(display);
-          toast('Sharing your screen — app stays open in a small window.', { key: 'share-on' });
+          toast('Sharing your screen.', { key: 'share-on' });
+          started = true;
+          window.setTimeout(release, 1800);
           return;
         }
+        toast('Screen sharing needs the latest LetsConnect app.', { key: 'share-unsupported' });
       } catch (error) {
         toast(isShareCancel(error) ? 'Screen share canceled' : shareFailMessage(error), {
           key: isShareCancel(error) ? 'share-cancel' : 'share-fail',
         });
-        return;
       } finally {
-        resume();
+        if (!started) release();
         setSharingPick(false);
       }
+      return;
     }
 
     if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
@@ -1188,6 +1207,7 @@ async function toggleRecord() {
   }
 
   function openSharedBoard() {
+    if (!canModerate) return;
     setBoardOpen(true);
     const meta = { hostOnly: true, open: true as const, clock: Date.now() };
     sendBoardMeta(meta);
@@ -1197,18 +1217,18 @@ async function toggleRecord() {
   }
 
   function closeSharedBoard() {
+    if (!canModerate) return;
     setBoardOpen(false);
-    if (isHost || isCoHost) {
-      sendBoardMeta({ hostOnly: boardMeta.hostOnly, open: false, clock: Date.now() });
-    }
+    sendBoardMeta({ hostOnly: boardMeta.hostOnly, open: false, clock: Date.now() });
   }
 
   function toggleSharedBoard() {
+    if (!canModerate) return;
     if (boardOpen || boardMeta.open) closeSharedBoard();
     else openSharedBoard();
   }
 
-  const showBoard = Boolean(boardOpen || boardMeta.open);
+  const showBoard = canModerate ? Boolean(boardOpen || boardMeta.open) : Boolean(boardMeta.open);
 
   function popOut() {
     setPipNonce((value) => value + 1);
@@ -1305,6 +1325,7 @@ async function toggleRecord() {
     panel,
     captionsOn,
     boardOpen,
+    canModerate,
     leave: finishLeave,
     toggleShare,
     toggleFullscreen,
@@ -1317,6 +1338,7 @@ async function toggleRecord() {
     popover,
     panel,
     captionsOn,
+    canModerate,
     boardOpen,
     leave: finishLeave,
     toggleShare,
@@ -1337,7 +1359,7 @@ async function toggleRecord() {
         if (typing) return;
         if (ui.dialog) setDialog(null);
         else if (ui.popover) setPopover(null);
-        else if (ui.boardOpen) closeSharedBoard();
+        else if (ui.boardOpen && ui.canModerate) closeSharedBoard();
         else if (ui.panel) setPanel(null);
         return;
       }
@@ -1353,7 +1375,7 @@ async function toggleRecord() {
       else if (key === 's') run(() => void ui.toggleShare());
       else if (key === 'h') run(() => setHand((value) => !value));
       else if (key === 'c') run(() => ui.togglePanel('chat'));
-      else if (key === 'w') run(() => ui.toggleBoard());
+      else if (key === 'w' && ui.canModerate) run(() => ui.toggleBoard());
       else if (key === 'p') {
         if (event.shiftKey) run(() => ui.popOut());
         else run(() => ui.togglePanel('people'));
@@ -1954,19 +1976,18 @@ async function toggleRecord() {
             <Whiteboard
               myId={myId}
               name={name}
-              isHost={isHost || isCoHost}
               objects={boardObjects}
               meta={boardMeta}
               cursors={boardCursors}
               live={boardLive}
-              canDraw={isHost || isCoHost}
-              followView={isHost || isCoHost ? null : boardView || boardMeta.view || null}
+              canDraw={canModerate}
+              followView={canModerate ? null : boardView || boardMeta.view || null}
               filmstrip={<div className="strip wb-people">{cameras.map((tile) => renderTile(tile))}</div>}
-              onOp={sendBoardOp}
-              onLive={sendBoardLive}
-              onCursor={sendBoardCursor}
-              onView={isHost || isCoHost ? sendBoardView : undefined}
-              onMeta={sendBoardMeta}
+              onOp={canModerate ? sendBoardOp : () => undefined}
+              onLive={canModerate ? sendBoardLive : () => undefined}
+              onCursor={canModerate ? sendBoardCursor : () => undefined}
+              onView={canModerate ? sendBoardView : undefined}
+              onMeta={canModerate ? sendBoardMeta : () => undefined}
               onSave={(blob) => {
                 const url = URL.createObjectURL(blob);
                 setBoardEvents((events) => [
@@ -2279,7 +2300,7 @@ async function toggleRecord() {
         micOn={micOn}
         camOn={camOn}
         hand={hand}
-        autoFloat={frame.autoFloat}
+        autoFloat
         docked={docked}
         panelOpen={Boolean(panel)}
         boardOpen={showBoard}
@@ -2410,15 +2431,17 @@ async function toggleRecord() {
           </div>
         </div>
         <div className="cgroup meet-panels">
-          <Cmd
-            className="desk-only"
-            label="Whiteboard"
-            shortcut="W"
-            live={showBoard}
-            onClick={toggleSharedBoard}
-          >
-            <IconBoard />
-          </Cmd>
+          {canModerate && (
+            <Cmd
+              className="desk-only"
+              label="Whiteboard"
+              shortcut="W"
+              live={showBoard}
+              onClick={toggleSharedBoard}
+            >
+              <IconBoard />
+            </Cmd>
+          )}
           <Cmd
             className="desk-only"
             label={unread ? `Chat ${unread}` : 'Chat'}
@@ -2456,21 +2479,26 @@ async function toggleRecord() {
                     }}
                   />
                 )}
-                <MenuButton
-                  icon={<IconBoard />}
-                  title="Whiteboard"
-                  hint="W"
-                  onClick={() => {
-                    setPopover(null);
-                    openSharedBoard();
-                  }}
-                />
+                {canModerate && (
+                  <MenuButton
+                    icon={<IconBoard />}
+                    title="Whiteboard"
+                    hint="W"
+                    onClick={() => {
+                      setPopover(null);
+                      openSharedBoard();
+                    }}
+                  />
+                )}
                 <MenuButton
                   icon={<IconBreakout />}
                   title="Breakouts"
                   soon
                   className="soon"
-                  onClick={() => toast('Breakout rooms are coming soon.')}
+                  onClick={() => {
+                    setPopover(null);
+                    openDialog('soon-rooms');
+                  }}
                 />
                 <p className="more-label">Meeting</p>
                 {canRecord && (
@@ -2660,16 +2688,18 @@ async function toggleRecord() {
                 <IconExpand />
                 <span>Full</span>
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setPopover(null);
-                  openSharedBoard();
-                }}
-              >
-                <IconBoard />
-                <span>Board</span>
-              </button>
+              {canModerate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPopover(null);
+                    openSharedBoard();
+                  }}
+                >
+                  <IconBoard />
+                  <span>Board</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
@@ -2680,7 +2710,13 @@ async function toggleRecord() {
                 <IconPip />
                 <span>Float</span>
               </button>
-              <button type="button" onClick={() => toast('Breakout rooms are coming soon.')}>
+              <button
+                type="button"
+                onClick={() => {
+                  setPopover(null);
+                  openDialog('soon-rooms');
+                }}
+              >
                 <IconBreakout />
                 <span>Rooms</span>
               </button>
@@ -2701,6 +2737,7 @@ async function toggleRecord() {
         ))}
       </div>
 
+      {dialog === 'soon-rooms' && <ComingSoonModal kind="rooms" onClose={() => setDialog(null)} />}
       {dialog === 'leave' && (
         <div className="modal-back leave-modal-back" role="presentation" onClick={() => setDialog(null)}>
           <div
@@ -2756,7 +2793,7 @@ async function toggleRecord() {
           onRetry={() => setDeviceNonce((value) => value + 1)}
         />
       )}
-      {dialog === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog === 'shortcuts' && <ShortcutsDialog canModerate={canModerate} onClose={() => setDialog(null)} />}
       {dialog === 'details' && (
         <DetailsDialog
           code={code}
@@ -4168,7 +4205,7 @@ function PollDialog({ onClose, onCreate }: { onClose: () => void; onCreate: (que
   );
 }
 
-function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+function ShortcutsDialog({ canModerate, onClose }: { canModerate: boolean; onClose: () => void }) {
   return (
     <div className="modal-back" onMouseDown={onClose}>
       <div className="modal" role="dialog" aria-labelledby="keys-title" onMouseDown={(event) => event.stopPropagation()}>
@@ -4180,12 +4217,14 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
         </header>
         <p className="hint">These keys work when you are not typing in a message.</p>
         <ul className="keys">
-          {shortcuts.map(([key, label]) => (
-            <li key={key}>
-              <kbd>{key}</kbd>
-              <span>{label}</span>
-            </li>
-          ))}
+          {shortcuts
+            .filter(([key]) => canModerate || key !== 'W')
+            .map(([key, label]) => (
+              <li key={key}>
+                <kbd>{key}</kbd>
+                <span>{label}</span>
+              </li>
+            ))}
         </ul>
       </div>
     </div>

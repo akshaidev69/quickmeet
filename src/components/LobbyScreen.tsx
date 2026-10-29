@@ -9,6 +9,7 @@ import { colorFor, initials } from '../lib/people';
 import { loadActiveRoom } from '../lib/storage';
 import { useSelfLook } from '../hooks/useSelfLook';
 import { useToasts } from '../hooks/useToasts';
+import { ComingSoonModal } from './ComingSoonModal';
 import type { BackgroundId, Settings } from '../types';
 
 type Props = {
@@ -56,7 +57,8 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
   const bgFileRef = useRef<HTMLInputElement>(null);
   const handed = useRef(false);
   const [displayName, setDisplayName] = useState(() => loadRoomDisplayName(code, settings.name));
-  const { toasts, push: toast } = useToasts();
+  const [soon, setSoon] = useState<'present' | null>(null);
+  const { toasts } = useToasts();
   const name = safeName(displayName);
   const activeRoom = loadActiveRoom();
   const meetingTitle = activeRoom?.code === code ? activeRoom.title?.trim() || '' : '';
@@ -548,7 +550,7 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
                 type="button"
                 className="secondary prejoin-present"
                 disabled={opening}
-                onClick={() => toast('Join & present is coming soon.')}
+                onClick={() => setSoon('present')}
               >
                 <IconShare />
                 Join &amp; present
@@ -562,6 +564,8 @@ export function LobbyScreen({ code, asHost = false, settings, onSettings, onJoin
           {permissionBlocked ? <PermissionHelp /> : null}
         </section>
       </div>
+
+      {soon === 'present' && <ComingSoonModal kind="present" onClose={() => setSoon(null)} />}
 
       {toasts.length > 0 && (
         <div className="toasts meet-lobby-toasts" aria-live="polite">

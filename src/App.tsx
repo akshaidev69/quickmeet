@@ -12,7 +12,16 @@ import { AuthProvider, useAuth } from './lib/auth';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
-import { consumeJoinDeepLink, rememberWebJoin, roomFromLocation, wantsJoinGate, webJoinUrl } from './lib/invite';
+import {
+  consumeJoinDeepLink,
+  peekPendingJoin,
+  rememberPendingJoin,
+  rememberWebJoin,
+  roomFromLocation,
+  takePendingJoin,
+  wantsJoinGate,
+  webJoinUrl,
+} from './lib/invite';
 import { isNativeApp } from './lib/native';
 import {
   clearActiveRoom,
@@ -49,7 +58,7 @@ function pathPhase(): Phase {
   return 'market';
 }
 
-function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
+function routeFromUrl(_instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
   const room = roomFromLocation();
   const base = pathPhase();
   if (base === 'privacy' || base === 'terms' || base === 'google-bridge') return { view: base, code: '' };
@@ -57,7 +66,11 @@ function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: s
   if (room) {
     const code = formatCode(room);
     if (!isFullCode(code) || !isValidMeetingCode(code)) return { view: 'missing', code: '' };
-    return { view: instant ? 'room' : 'lobby', code };
+    if (!authed) {
+      rememberPendingJoin(code);
+      return { view: 'login', code };
+    }
+    return { view: 'lobby', code };
   }
   if (!authed) {
     if (base === 'login' || base === 'register') return { view: base, code: '' };
@@ -139,7 +152,7 @@ function AppRoutes() {
           const next = routeFromUrl(loadSettings().instantJoin, Boolean(user));
           setCode(next.code);
           setAsHost(Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1'));
-          setView(next.view === 'join-gate' ? (loadSettings().instantJoin ? 'room' : 'lobby') : next.view);
+          setView(next.view === 'join-gate' ? 'lobby' : next.view);
           setBoot(false);
         });
       } catch {
@@ -189,10 +202,12 @@ function AppRoutes() {
         return;
       }
     }
-    if (isNativeApp()) {
-      const hasRoom = Boolean(roomFromLocation());
-      if (!user && !hasRoom && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms') {
-        navigate('/login', true);
+    if (isNativeApp() && !user) {
+      const joinCode = roomFromLocation() || next.code;
+      if (joinCode) rememberPendingJoin(joinCode);
+      if (path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms' && path !== '/join' && !path.startsWith('/join/')) {
+        navigate(joinCode ? `/login?room=${encodeURIComponent(joinCode)}` : '/login', true);
+        setView('login');
       }
     }
   }, [loading, user, settings.instantJoin, nativeLaunchReady]);
@@ -379,6 +394,15 @@ function AppRoutes() {
     );
   }
 
+  function afterAuth() {
+    const pending = takePendingJoin() || code;
+    if (pending && isFullCode(formatCode(pending)) && isValidMeetingCode(pending)) {
+      void enter(pending, 'LetsConnect meeting', 'lobby', 'guest');
+      return;
+    }
+    goApp();
+  }
+
   if (view === 'join-gate' && code) {
     return (
       <JoinGate
@@ -388,25 +412,17 @@ function AppRoutes() {
         onHome={goMarket}
         onContinueWeb={() => {
           rememberWebJoin(code);
+          rememberPendingJoin(code);
           history.replaceState({ view: 'lobby' }, '', webJoinUrl(code));
-          setView(settings.instantJoin ? 'room' : 'lobby');
+          if (user) void enter(code, 'LetsConnect meeting', 'lobby', 'guest');
+          else setView('login');
         }}
       />
     );
   }
 
-  function afterAuth() {
-    const pending = sessionStorage.getItem('lc-pending-join');
-    if (pending) {
-      sessionStorage.removeItem('lc-pending-join');
-      void enter(pending, 'LetsConnect meeting', settings.instantJoin ? 'room' : 'lobby', 'guest');
-      return;
-    }
-    goApp();
-  }
-
-  if (!user && view !== 'lobby' && view !== 'room' && view !== 'missing' && view !== 'summary' && view !== 'join-gate') {
-    if (isNativeApp() || view === 'login' || view === 'register') {
+  if (!user && view !== 'missing' && view !== 'summary' && view !== 'join-gate') {
+    if (isNativeApp() || view === 'login' || view === 'register' || Boolean(peekPendingJoin() || code || roomFromLocation())) {
       return (
         <AuthScreen
           mode={view === 'register' ? 'register' : 'login'}

@@ -147,7 +147,7 @@ public class MainActivity extends BridgeActivity {
     public boolean enterPip() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false;
         if (isInPictureInPictureMode()) return true;
-        if (!meetingActive) return false;
+        if (!meetingActive || suppressPip) return false;
         try {
             return enterPictureInPictureMode(pipParams());
         } catch (Exception ignored) {

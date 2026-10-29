@@ -35,7 +35,6 @@ type LiveStroke = { id: string; points: BoardPoint[]; color: string; size: numbe
 type Props = {
   myId: string;
   name: string;
-  isHost: boolean;
   objects: BoardObject[];
   meta: BoardMeta;
   cursors: BoardCursor[];
@@ -96,7 +95,6 @@ function cameraFromView(view: BoardView, width: number, height: number): Camera 
 export function Whiteboard({
   myId,
   name,
-  isHost,
   objects,
   meta,
   cursors,
@@ -858,18 +856,20 @@ export function Whiteboard({
           onPointerUp={pointerUp}
           onPointerCancel={pointerUp}
         />
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/*"
-          className="wb-file"
-          aria-label="Add image"
-          onChange={(event) => {
-            const file = event.target.files?.[0];
-            event.target.value = '';
-            if (file) void addImage(file, imageAt.current.x, imageAt.current.y);
-          }}
-        />
+        {canDraw && (
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="wb-file"
+            aria-label="Add image"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = '';
+              if (file) void addImage(file, imageAt.current.x, imageAt.current.y);
+            }}
+          />
+        )}
         {cursors.map((cursor) => {
           if (cursor.id === myId) return null;
           return (
@@ -1012,11 +1012,9 @@ export function Whiteboard({
           <button type="button" onClick={() => void saveToMeeting()}>
             Save
           </button>
-          {isHost && (
-            <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
-              Clear
-            </button>
-          )}
+          <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
+            Clear
+          </button>
           <button type="button" className="wb-close" onClick={onClose}>
             Close
           </button>

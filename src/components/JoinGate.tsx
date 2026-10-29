@@ -1,13 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Logo } from './icons';
 import { ThemeButton } from './LookControls';
-import {
-  isAndroidWeb,
-  isIosWeb,
-  openAppStore,
-  openInNativeApp,
-  shareInviteUrl,
-} from '../lib/invite';
+import { continueWithApp, shareInviteUrl } from '../lib/invite';
 import type { ThemeMode } from '../types';
 
 type Props = {
@@ -20,14 +14,7 @@ type Props = {
 
 export function JoinGate({ code, theme, onTheme, onContinueWeb, onHome }: Props) {
   const [copied, setCopied] = useState(false);
-  const android = isAndroidWeb();
-  const ios = isIosWeb();
-
-  useEffect(() => {
-    if (!android) return;
-    const id = window.setTimeout(() => openInNativeApp(code), 280);
-    return () => window.clearTimeout(id);
-  }, [android, code]);
+  const [appStatus, setAppStatus] = useState<'idle' | 'opening' | 'download'>('idle');
 
   async function copyCode() {
     try {
@@ -37,6 +24,11 @@ export function JoinGate({ code, theme, onTheme, onContinueWeb, onHome }: Props)
     } catch {
       setCopied(false);
     }
+  }
+
+  function onContinueApp() {
+    setAppStatus('opening');
+    continueWithApp(code, () => setAppStatus('download'));
   }
 
   return (
@@ -51,26 +43,20 @@ export function JoinGate({ code, theme, onTheme, onContinueWeb, onHome }: Props)
       <section className="join-gate-card">
         <p className="join-gate-kicker">You are invited</p>
         <h1>Join this meeting</h1>
-        <p className="hint">
-          {android
-            ? 'Opening LetsConnect if it is installed on this phone. If nothing happens, download the app or continue in the browser.'
-            : ios
-              ? 'Open the LetsConnect app to join, download it if you do not have it yet, or continue in this browser.'
-              : 'Open the LetsConnect app, download it, or continue in this browser.'}
-        </p>
+        <p className="hint">Continue with the LetsConnect app, or join in this browser. You will sign in before the waiting room.</p>
         <button type="button" className="join-gate-code" onClick={() => void copyCode()}>
           {code}
           <span>{copied ? 'Link copied' : 'Copy invite'}</span>
         </button>
-        <button type="button" className="primary join-gate-btn" onClick={() => openInNativeApp(code)}>
-          Open in app
+        <button type="button" className="primary join-gate-btn" onClick={onContinueApp}>
+          {appStatus === 'opening' ? 'Opening the app…' : appStatus === 'download' ? 'Downloading the app…' : 'Continue with app'}
         </button>
-        <button type="button" className="secondary join-gate-btn" onClick={() => openAppStore()}>
-          Download the app
+        <button type="button" className="secondary join-gate-btn" onClick={onContinueWeb}>
+          Continue in web
         </button>
-        <button type="button" className="join-gate-web" onClick={onContinueWeb}>
-          Continue in browser
-        </button>
+        {appStatus === 'download' ? (
+          <p className="hint">App not installed, so the LetsConnect APK is downloading. Install it, then tap Continue with app again.</p>
+        ) : null}
       </section>
     </main>
   );

@@ -2476,11 +2476,40 @@ video.fx-hidden { opacity: 0; }
   place-items: center;
   padding: 18px;
 }
-.modal-back.leave-modal-back {
+.modal-back.leave-modal-back,
+.modal-back.coming-soon-back {
   z-index: 80;
   background: rgba(6, 10, 8, 0.62);
   backdrop-filter: blur(10px);
   padding: 20px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+}
+.coming-soon-modal {
+  display: grid;
+  gap: 10px;
+  width: min(420px, 100%);
+}
+.coming-soon-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+.coming-soon-modal h2 {
+  margin: 0;
+  letter-spacing: -0.03em;
+}
+.coming-soon-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: var(--text);
+}
+.coming-soon-ok {
+  width: 100%;
+  min-height: 44px;
 }
 .modal {
   position: relative;
@@ -7403,6 +7432,15 @@ html.is-mobile .tile-frame-btn {
   grid-template-columns: 1fr;
   grid-template-rows: minmax(0, 1fr);
   padding: 0;
+}
+.wb-root[data-role="guest"] .wb-toolbar,
+.wb-root[data-role="guest"] .wb-side,
+.wb-root[data-role="guest"] .wb-file,
+.wb-root[data-role="guest"] .wb-minimap,
+.wb-root[data-role="guest"] .wb-confirm-scrim,
+.wb-root[data-role="guest"] .wb-text {
+  display: none !important;
+  pointer-events: none !important;
 }
 .wb-root[data-role="guest"] .wb-canvas-wrap {
   border-radius: 0;

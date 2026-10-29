@@ -14,6 +14,7 @@ import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.Looper;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
@@ -92,11 +93,11 @@ public class ScreenSharePlugin extends Plugin {
         pendingStart = null;
 
         Activity activity = getActivity();
-        if (activity instanceof MainActivity) {
-            ((MainActivity) activity).setSuppressPip(false);
-        }
 
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).setSuppressPip(false);
+            }
             if (startCall != null) startCall.reject("Screen share permission denied.");
             return;
         }
@@ -111,6 +112,9 @@ public class ScreenSharePlugin extends Plugin {
 
             mediaProjection = projectionManager.getMediaProjection(result.getResultCode(), result.getData());
             if (mediaProjection == null) {
+                if (activity instanceof MainActivity) {
+                    ((MainActivity) activity).setSuppressPip(false);
+                }
                 if (startCall != null) startCall.reject("Could not start screen capture.");
                 return;
             }
@@ -148,8 +152,17 @@ public class ScreenSharePlugin extends Plugin {
                 ok.put("height", captureHeight);
                 startCall.resolve(ok);
             }
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                Activity later = getActivity();
+                if (later instanceof MainActivity && capturing) {
+                    ((MainActivity) later).setSuppressPip(false);
+                }
+            }, 1600);
         } catch (Exception error) {
             stopInternal();
+            if (activity instanceof MainActivity) {
+                ((MainActivity) activity).setSuppressPip(false);
+            }
             if (startCall != null) startCall.reject(error.getMessage() != null ? error.getMessage() : "Screen share failed.");
         }
     }

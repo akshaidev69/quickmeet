@@ -3,19 +3,19 @@ import { isNativeApp } from './native';
 
 export const APP_PACKAGE = 'com.letsconnect.app';
 export const APP_SCHEME = 'letsconnect';
-export const PLAY_STORE_URL = `https://play.google.com/store/apps/details?id=${APP_PACKAGE}`;
-export const PLAY_MARKET_URL = `market://details?id=${APP_PACKAGE}`;
+export const APK_DOWNLOAD_URL = '/letsconnect.apk';
+export const PENDING_JOIN_KEY = 'lc-pending-join';
 
 function originOf() {
   return typeof location !== 'undefined' ? location.origin : '';
 }
 
-/** Link people share. Phones without the app land on the join chooser. */
+/** Link people share. Opens the app/web chooser. */
 export function shareInviteUrl(code: string, origin = originOf()) {
   return `${origin}/join?room=${encodeURIComponent(formatCode(code))}`;
 }
 
-/** In-browser lobby / call URL. Native shells and "Continue in browser" use this. */
+/** Waiting-room URL after the guest chooses web (or the native app). */
 export function webJoinUrl(code: string, origin = originOf()) {
   return `${origin}/app?room=${encodeURIComponent(formatCode(code))}`;
 }
@@ -39,26 +39,8 @@ export function isAuthDeepLink(raw: string) {
   }
 }
 
-export function isPhoneWeb() {
-  if (typeof navigator === 'undefined') return false;
-  if (isNativeApp()) return false;
-  const ua = navigator.userAgent || '';
-  if (/windows phone/i.test(ua)) return true;
-  if (/android/i.test(ua)) return true;
-  if (/iPhone|iPod|iPad/i.test(ua)) return true;
-  if (navigator.maxTouchPoints > 2 && /MacIntel/i.test(navigator.platform || '')) return true;
-  return false;
-}
-
 export function isAndroidWeb() {
   return typeof navigator !== 'undefined' && /android/i.test(navigator.userAgent || '');
-}
-
-export function isIosWeb() {
-  if (typeof navigator === 'undefined') return false;
-  const ua = navigator.userAgent || '';
-  if (/iPhone|iPod|iPad/i.test(ua)) return true;
-  return navigator.maxTouchPoints > 2 && /MacIntel/i.test(navigator.platform || '');
 }
 
 export function roomFromLocation(href = typeof location !== 'undefined' ? location.href : '') {
@@ -93,7 +75,7 @@ export function meetingCodeFromUrl(raw: string): string | null {
 }
 
 export function wantsJoinGate(code: string) {
-  if (!code || isNativeApp() || !isPhoneWeb()) return false;
+  if (!code || isNativeApp()) return false;
   const formatted = formatCode(code);
   if (!isFullCode(formatted) || !isValidMeetingCode(formatted)) return false;
   try {
@@ -117,10 +99,37 @@ export function rememberWebJoin(code: string) {
   }
 }
 
+export function rememberPendingJoin(code: string) {
+  try {
+    sessionStorage.setItem(PENDING_JOIN_KEY, formatCode(code));
+  } catch {
+    /* private mode */
+  }
+}
+
+export function takePendingJoin() {
+  try {
+    const code = sessionStorage.getItem(PENDING_JOIN_KEY) || '';
+    if (code) sessionStorage.removeItem(PENDING_JOIN_KEY);
+    return code;
+  } catch {
+    return '';
+  }
+}
+
+export function peekPendingJoin() {
+  try {
+    return sessionStorage.getItem(PENDING_JOIN_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
 export function consumeJoinDeepLink(raw: string) {
   const code = meetingCodeFromUrl(raw);
   if (!code || typeof history === 'undefined') return false;
   try {
+    rememberPendingJoin(code);
     const url = new URL(webJoinUrl(code), location.href);
     history.replaceState({ view: 'lobby' }, '', url);
     return true;
@@ -129,7 +138,7 @@ export function consumeJoinDeepLink(raw: string) {
   }
 }
 
-/** Open the native app if installed. No Play fallback — the chooser page stays visible if missing. */
+/** Open the native app if installed. No store fallback — the chooser stays if the app is missing. */
 export function openInNativeApp(code: string) {
   if (isAndroidWeb()) {
     window.location.href = androidJoinIntent(code);
@@ -138,13 +147,22 @@ export function openInNativeApp(code: string) {
   window.location.href = nativeJoinUrl(code);
 }
 
-export function openAppStore() {
-  if (isAndroidWeb()) {
-    window.location.href = PLAY_MARKET_URL;
-    window.setTimeout(() => {
-      if (document.visibilityState === 'visible') window.location.href = PLAY_STORE_URL;
-    }, 900);
-    return;
-  }
-  window.location.href = PLAY_STORE_URL;
+export function downloadApk() {
+  const link = document.createElement('a');
+  link.href = APK_DOWNLOAD_URL;
+  link.download = 'LetsConnect.apk';
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+/** Try the installed app, then download the APK if this page is still visible. */
+export function continueWithApp(code: string, onDownload?: () => void) {
+  openInNativeApp(code);
+  window.setTimeout(() => {
+    if (document.visibilityState === 'hidden') return;
+    onDownload?.();
+    downloadApk();
+  }, 1400);
 }

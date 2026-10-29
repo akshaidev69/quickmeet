@@ -41,16 +41,20 @@ function contentType(filePath) {
       '.woff': 'font/woff',
       '.woff2': 'font/woff2',
       '.map': 'application/json; charset=utf-8',
+      '.apk': 'application/vnd.android.package-archive',
     }[ext] || 'application/octet-stream'
   );
 }
 
 function sendFile(res, req, filePath, status = 200) {
   const data = fs.readFileSync(filePath);
-  const html = path.extname(filePath) === '.html';
+  const ext = path.extname(filePath).toLowerCase();
+  const html = ext === '.html';
+  const apk = ext === '.apk';
   res.writeHead(status, {
     'Content-Type': contentType(filePath),
-    'Cache-Control': html ? 'no-cache' : 'public, max-age=31536000, immutable',
+    'Cache-Control': html || apk ? 'no-cache' : 'public, max-age=31536000, immutable',
+    ...(apk ? { 'Content-Disposition': 'attachment; filename="LetsConnect.apk"' } : {}),
     ...securityHeaders(req),
   });
   res.end(data);

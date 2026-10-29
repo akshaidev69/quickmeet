@@ -8,6 +8,7 @@ import { claimFirebaseHandoff, fetchConfig, loginWithFirebaseToken, requestPassw
 import { loadSettings, saveSettings } from '../lib/storage';
 import { ThemeButton } from './LookControls';
 import { exchangeGoogleIdToken, firebaseConfigured, signInWithGooglePopup } from '../lib/firebase';
+import { peekPendingJoin } from '../lib/invite';
 import {
   closeExternalBrowser,
   googleBridgeUrl,
@@ -174,6 +175,7 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
   }
 
   const native = isNativeApp();
+  const pendingJoin = peekPendingJoin();
 
   async function onForgot() {
     setError('');
@@ -214,9 +216,11 @@ export function AuthScreen({ mode, onMode, onSuccess, onBack }: Props) {
           <Logo size={32} />
           <h1>{mode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
           <p>
-            {mode === 'login'
-              ? 'Log in with Google or email to open your meetings.'
-              : 'Free forever for now — no card needed.'}
+            {pendingJoin
+              ? `Sign in to join ${pendingJoin} in the waiting room.`
+              : mode === 'login'
+                ? 'Log in with Google or email to open your meetings.'
+                : 'Free forever for now — no card needed.'}
           </p>
         </div>
 

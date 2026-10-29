@@ -354,6 +354,9 @@ export function MeetingPip({
     async (reason: 'manual' | 'media-session' | 'hide') => {
       if (isFloating() || opening.current) return true;
       opening.current = true;
+      const stuck = window.setTimeout(() => {
+        opening.current = false;
+      }, 4000);
       paintFallback();
       try {
         try {
@@ -364,21 +367,19 @@ export function MeetingPip({
               autoOpened.current = reason !== 'manual';
               return true;
             }
-            if (reason !== 'manual') return false;
+            if (reason === 'hide') return false;
           }
         } catch {
           /* web or older APK */
         }
-        if (reason !== 'hide') {
-          try {
-            const docOk = await raceTimeout(openDocumentPip(), 2500, 'Floating window timed out');
-            if (docOk) {
-              autoOpened.current = reason !== 'manual';
-              return true;
-            }
-          } catch {
-            /* document PiP blocked */
+        try {
+          const docOk = await raceTimeout(openDocumentPip(), 2500, 'Floating window timed out');
+          if (docOk) {
+            autoOpened.current = reason !== 'manual';
+            return true;
           }
+        } catch {
+          /* document PiP blocked */
         }
         try {
           await openVideoPip();
@@ -392,6 +393,7 @@ export function MeetingPip({
           return false;
         }
       } finally {
+        window.clearTimeout(stuck);
         opening.current = false;
       }
     },
@@ -478,11 +480,12 @@ export function MeetingPip({
     if (!autoFloat) return;
     let hideTimer = 0;
     let showTimer = 0;
-    const onHide = () => {
+    const onHide = (force = false) => {
       if (autoFloatPaused()) return;
       window.clearTimeout(showTimer);
       hideTimer = window.setTimeout(() => {
-        if (autoFloatPaused() || document.visibilityState !== 'hidden') return;
+        if (autoFloatPaused()) return;
+        if (!force && document.visibilityState !== 'hidden') return;
         void openFloatRef.current('hide');
       }, 180);
     };
@@ -498,14 +501,22 @@ export function MeetingPip({
       if (document.visibilityState === 'hidden') onHide();
       else onShow();
     };
+    const onBlur = () => {
+      if (autoFloatPaused() || document.hasFocus()) return;
+      onHide();
+    };
+    const onFocus = () => onShow();
+    const onPageHide = () => onHide();
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('pagehide', onHide);
+    window.addEventListener('pagehide', onPageHide);
     window.addEventListener('pageshow', onShow);
+    window.addEventListener('blur', onBlur);
+    window.addEventListener('focus', onFocus);
     let appHandle: { remove: () => Promise<void> } | null = null;
     void import('@capacitor/app')
       .then(({ App }) =>
         App.addListener('appStateChange', ({ isActive }) => {
-          if (!isActive) onHide();
+          if (!isActive) onHide(true);
           else onShow();
         }),
       )
@@ -517,8 +528,10 @@ export function MeetingPip({
       window.clearTimeout(hideTimer);
       window.clearTimeout(showTimer);
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pagehide', onHide);
+      window.removeEventListener('pagehide', onPageHide);
       window.removeEventListener('pageshow', onShow);
+      window.removeEventListener('blur', onBlur);
+      window.removeEventListener('focus', onFocus);
       void appHandle?.remove();
     };
   }, [autoFloat]);
