@@ -108,7 +108,6 @@ export function Whiteboard({
   onLive,
   onCursor,
   onView,
-  onMeta,
   onSave,
   onClose,
 }: Props) {
