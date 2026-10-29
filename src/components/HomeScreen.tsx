@@ -456,6 +456,12 @@ export function HomeScreen({
 
   const profileMenu = menuOpen ? (
     <>
+      <button
+        type="button"
+        className="dash-menu-backdrop"
+        aria-label="Close profile menu"
+        onClick={() => setMenuOpen(false)}
+      />
       <div className="dash-profile-menu" role="menu" ref={menuRef}>
         <div className="dash-profile-head">
           <strong>{user?.name || 'Your profile'}</strong>

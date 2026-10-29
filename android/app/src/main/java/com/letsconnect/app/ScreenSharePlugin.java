@@ -10,11 +10,11 @@ import android.hardware.display.VirtualDisplay;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
+import android.media.projection.MediaProjectionConfig;
 import android.media.projection.MediaProjectionManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Looper;
 import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.view.WindowManager;
@@ -76,13 +76,25 @@ public class ScreenSharePlugin extends Plugin {
             call.reject("Screen share is not supported on this device.");
             return;
         }
-        // MediaProjection UI leaves the activity — don't auto-PiP until capture is ready.
+        // MediaProjection UI leaves the activity — keep the WebView alive, but
+        // don't auto-PiP until capture is actually running.
         Activity activity = getActivity();
         if (activity instanceof MainActivity) {
-            ((MainActivity) activity).setSuppressPip(true);
+            MainActivity main = (MainActivity) activity;
+            main.setKeepMeetingAlive(true);
+            main.setSuppressPip(true);
         }
         pendingStart = call;
-        Intent intent = projectionManager.createScreenCaptureIntent();
+        Intent intent;
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Whole display — sharing Chrome as a single-app capture would
+            // foreground Chrome and kill the meeting WebView.
+            intent = projectionManager.createScreenCaptureIntent(
+                MediaProjectionConfig.createConfigForDefaultDisplay()
+            );
+        } else {
+            intent = projectionManager.createScreenCaptureIntent();
+        }
         startActivityForResult(call, intent, "onProjectionResult");
     }
 
@@ -96,7 +108,9 @@ public class ScreenSharePlugin extends Plugin {
 
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null) {
             if (activity instanceof MainActivity) {
-                ((MainActivity) activity).setSuppressPip(false);
+                MainActivity main = (MainActivity) activity;
+                main.setSuppressPip(false);
+                main.setKeepMeetingAlive(false);
             }
             if (startCall != null) startCall.reject("Screen share permission denied.");
             return;
@@ -113,7 +127,9 @@ public class ScreenSharePlugin extends Plugin {
             mediaProjection = projectionManager.getMediaProjection(result.getResultCode(), result.getData());
             if (mediaProjection == null) {
                 if (activity instanceof MainActivity) {
-                    ((MainActivity) activity).setSuppressPip(false);
+                    MainActivity main = (MainActivity) activity;
+                    main.setSuppressPip(false);
+                    main.setKeepMeetingAlive(false);
                 }
                 if (startCall != null) startCall.reject("Could not start screen capture.");
                 return;
@@ -146,22 +162,23 @@ public class ScreenSharePlugin extends Plugin {
             );
 
             capturing = true;
+            if (activity instanceof MainActivity) {
+                MainActivity main = (MainActivity) activity;
+                main.setKeepMeetingAlive(true);
+                main.setSuppressPip(true);
+            }
             if (startCall != null) {
                 JSObject ok = new JSObject();
                 ok.put("width", captureWidth);
                 ok.put("height", captureHeight);
                 startCall.resolve(ok);
             }
-            new Handler(Looper.getMainLooper()).postDelayed(() -> {
-                Activity later = getActivity();
-                if (later instanceof MainActivity && capturing) {
-                    ((MainActivity) later).setSuppressPip(false);
-                }
-            }, 1600);
         } catch (Exception error) {
             stopInternal();
             if (activity instanceof MainActivity) {
-                ((MainActivity) activity).setSuppressPip(false);
+                MainActivity main = (MainActivity) activity;
+                main.setSuppressPip(false);
+                main.setKeepMeetingAlive(false);
             }
             if (startCall != null) startCall.reject(error.getMessage() != null ? error.getMessage() : "Screen share failed.");
         }
@@ -256,6 +273,12 @@ public class ScreenSharePlugin extends Plugin {
         try {
             getContext().stopService(new Intent(getContext(), ScreenCaptureService.class));
         } catch (Exception ignored) {}
+        Activity activity = getActivity();
+        if (activity instanceof MainActivity) {
+            MainActivity main = (MainActivity) activity;
+            main.setKeepMeetingAlive(false);
+            main.setSuppressPip(false);
+        }
         notifyListeners("stopped", new JSObject());
     }
 

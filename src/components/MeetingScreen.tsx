@@ -189,8 +189,9 @@ function gridClass(count: number) {
   return 'grid cols6';
 }
 
-function tileFitFor(frame: FramePrefs, key: string, portrait: boolean, compact: boolean): TileFit {
+function tileFitFor(frame: FramePrefs, key: string, portrait: boolean, compact: boolean, kind?: TileModel['kind']): TileFit {
   if (frame.fit[key]) return frame.fit[key];
+  if (kind === 'screen') return 'contain';
   if (compact) return 'cover';
   if (portrait) return 'contain';
   return frame.defaultFit;
@@ -1051,7 +1052,6 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
           setScreenStream(display);
           toast('Sharing your screen.', { key: 'share-on' });
           started = true;
-          window.setTimeout(release, 1800);
           return;
         }
         toast('Screen sharing needs the latest LetsConnect app.', { key: 'share-unsupported' });
@@ -1488,7 +1488,7 @@ async function toggleRecord() {
     const compact =
       viewportMobile || document.documentElement.classList.contains('is-mobile') || document.documentElement.classList.contains('is-native');
     const trackPortrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
-    const fit = tileFitFor(frame, tile.key, trackPortrait, compact);
+    const fit = tileFitFor(frame, tile.key, trackPortrait, compact, tile.kind);
     const blurFill = trackPortrait && fit === 'contain' && !compact;
     return (
       <Tile
@@ -3209,6 +3209,7 @@ function Tile({
         layoutRole === 'pip' && 'meet-pip-tile',
         layoutRole === 'main' && 'meet-main-tile',
       )}
+      data-kind={tile.kind}
       data-fit={fit}
       onContextMenu={(event) => event.preventDefault()}
     >

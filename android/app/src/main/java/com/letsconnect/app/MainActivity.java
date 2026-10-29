@@ -29,6 +29,7 @@ public class MainActivity extends BridgeActivity {
 
     private boolean meetingActive = false;
     private boolean suppressPip = false;
+    private boolean keepMeetingAlive = false;
     private boolean pipMicOn = true;
     private boolean pipCamOn = true;
 
@@ -77,11 +78,18 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onPause() {
         super.onPause();
-        // Keep the meeting WebView painting while minimized in PiP.
-        if (isInPipMode() && this.bridge != null && this.bridge.getWebView() != null) {
-            WebView webView = this.bridge.getWebView();
-            webView.onResume();
-            webView.resumeTimers();
+        // Never PiP during screen share — that tears down WebRTC and dumps
+        // people into the waiting room. Keep the WebView running instead.
+        if (shouldKeepWebViewAlive()) {
+            resumeMeetingWebView();
+        }
+    }
+
+    @Override
+    public void onStop() {
+        super.onStop();
+        if (shouldKeepWebViewAlive()) {
+            resumeMeetingWebView();
         }
     }
 
@@ -125,13 +133,23 @@ public class MainActivity extends BridgeActivity {
         meetingActive = active;
         if (!active) {
             suppressPip = false;
+            keepMeetingAlive = false;
         }
         applyPipParams();
+        applyKeepScreenOn();
     }
 
     public void setSuppressPip(boolean suppress) {
         suppressPip = suppress;
         applyPipParams();
+    }
+
+    public void setKeepMeetingAlive(boolean keep) {
+        keepMeetingAlive = keep;
+        applyKeepScreenOn();
+        if (keep) {
+            resumeMeetingWebView();
+        }
     }
 
     public void setPipControls(boolean micOn, boolean camOn) {
@@ -187,6 +205,30 @@ public class MainActivity extends BridgeActivity {
         }
         PendingIntent pending = PendingIntent.getBroadcast(this, requestCode, intent, flags);
         return new RemoteAction(Icon.createWithResource(this, icon), title, title, pending);
+    }
+
+    private boolean shouldKeepWebViewAlive() {
+        return isInPipMode() || keepMeetingAlive || suppressPip;
+    }
+
+    private void resumeMeetingWebView() {
+        if (this.bridge == null || this.bridge.getWebView() == null) return;
+        WebView webView = this.bridge.getWebView();
+        webView.onResume();
+        webView.resumeTimers();
+    }
+
+    private void applyKeepScreenOn() {
+        if (getWindow() == null) return;
+        try {
+            if (keepMeetingAlive || meetingActive) {
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        } catch (Exception ignored) {
+            /* window not ready */
+        }
     }
 
     private void applyPipParams() {

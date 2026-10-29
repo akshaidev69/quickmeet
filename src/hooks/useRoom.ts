@@ -56,6 +56,34 @@ function stablePeerId(code: string) {
   }
 }
 
+function admittedKey(code: string, id: string) {
+  return `lc-admitted:${code}:${id}`;
+}
+
+function rememberAdmitted(code: string, id: string) {
+  try {
+    sessionStorage.setItem(admittedKey(code, id), '1');
+  } catch {
+    /* private mode */
+  }
+}
+
+function forgetAdmitted(code: string, id: string) {
+  try {
+    sessionStorage.removeItem(admittedKey(code, id));
+  } catch {
+    /* private mode */
+  }
+}
+
+function hadAdmitted(code: string, id: string) {
+  try {
+    return sessionStorage.getItem(admittedKey(code, id)) === '1';
+  } catch {
+    return false;
+  }
+}
+
 type Bucket = { camera: MediaStream; screen: MediaStream; audio: MediaStream };
 type VideoItem = { mid: string | null; track: MediaStreamTrack };
 type Conn = {
@@ -171,7 +199,7 @@ export function useRoom(options: Options) {
   const claimHostRef = useRef(Boolean(options.claimHost));
   claimHostRef.current = Boolean(options.claimHost);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
-  const [gate, setGate] = useState<GateState>(options.claimHost ? 'connecting' : 'connecting');
+  const [gate, setGate] = useState<GateState>(() => (hadAdmitted(options.code, peerId) ? 'admitted' : 'connecting'));
   const [waiting, setWaiting] = useState<WaitingPerson[]>([]);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [connState, setConnState] = useState<Record<string, RTCPeerConnectionState | 'new'>>({});
@@ -207,7 +235,7 @@ export function useRoom(options: Options) {
   const onForceMuteRef = useRef(options.onForceMute);
   const onHostCastRef = useRef(options.onHostCast);
   const onMeetingEndedRef = useRef(options.onMeetingEnded);
-  const admittedRef = useRef(false);
+  const admittedRef = useRef(hadAdmitted(options.code, peerId));
   const apiRef = useRef<RoomApi | null>(null);
   const mediaRef = useRef(new Map<string, Bucket>());
 
@@ -659,6 +687,8 @@ export function useRoom(options: Options) {
       }
       if (payload.type === 'kick') {
         dead = true;
+        forgetAdmitted(options.code, peerId);
+        admittedRef.current = false;
         if (!closed) setKickedBy(peersRef.current[payload.from]?.name || 'The host');
         if (socket && socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({ kind: 'signal', from: peerId, payload: { type: 'leave', from: peerId } }));
@@ -826,6 +856,9 @@ export function useRoom(options: Options) {
           if (message.hostId) setHostId(message.hostId);
           if (Array.isArray(message.coHostIds)) setCoHostIds(message.coHostIds);
           if (message.state === 'waiting') {
+            if (admittedRef.current || hadAdmitted(options.code, peerId)) {
+              return;
+            }
             admittedRef.current = false;
             setGate('waiting');
             return;
@@ -833,12 +866,14 @@ export function useRoom(options: Options) {
           if (message.state === 'denied') {
             dead = true;
             admittedRef.current = false;
+            forgetAdmitted(options.code, peerId);
             setGate('denied');
             socket?.close();
             return;
           }
           if (message.state === 'admitted') {
             admittedRef.current = true;
+            rememberAdmitted(options.code, peerId);
             setGate('admitted');
             enterMeeting();
             return;

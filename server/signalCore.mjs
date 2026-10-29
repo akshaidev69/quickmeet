@@ -8,7 +8,7 @@ import {
 /** @type {import('http').Server | null} */
 let attachedServer = null;
 
-/** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean }>>} */
+/** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean, leaveTimer?: ReturnType<typeof setTimeout> | null }>>} */
 const rooms = new Map();
 /** @type {Map<string, string>} */
 const hosts = new Map();
@@ -268,6 +268,10 @@ export function attachSignal(httpServer) {
         touchRoomActivity(room);
         const map = roomMap(room);
         const previous = map.get(peerId);
+        if (previous?.leaveTimer) {
+          clearTimeout(previous.leaveTimer);
+          previous.leaveTimer = null;
+        }
         if (previous && previous.ws !== ws) {
           try {
             previous.ws.close();
@@ -278,7 +282,7 @@ export function attachSignal(httpServer) {
 
         const memory = memoryFor(room);
         const claimHost = Boolean(msg.claimHost);
-        const previouslyAdmitted = memory.has(peerId);
+        const previouslyAdmitted = memory.has(peerId) || Boolean(previous?.admitted);
         let hostId = stickyHost(room);
         const hostMember = hostId ? map.get(hostId) : null;
         const hostAlive =
@@ -301,8 +305,8 @@ export function attachSignal(httpServer) {
           return;
         }
 
-        const admitted = peerId === hostId || (previouslyAdmitted && allowRejoin.get(room) === true);
-        const member = { ws, name, admitted };
+        const admitted = peerId === hostId || previouslyAdmitted;
+        const member = { ws, name, admitted, leaveTimer: null };
         map.set(peerId, member);
         if (admitted) memory.add(peerId);
 
@@ -483,26 +487,32 @@ export function attachSignal(httpServer) {
       if (!map) return;
       const self = map.get(peerId);
       if (!self || self.ws !== ws) return;
-      const wasAdmitted = self.admitted;
-      const wasHost = stickyHost(room) === peerId;
-      map.delete(peerId);
-      cohostFor(room).delete(peerId);
-      if (wasHost) transferHost(room, map, peerId);
-      if (wasAdmitted) {
-        const notice = JSON.stringify({
-          kind: 'signal',
-          from: peerId,
-          payload: { type: 'leave', from: peerId },
-        });
-        for (const member of map.values()) {
-          if (member.admitted && member.ws.readyState === 1) member.ws.send(notice);
+      if (self.leaveTimer) clearTimeout(self.leaveTimer);
+      // Brief drops (Android screen share / Chrome) reconnect on the same peer id.
+      // Wait before treating them as gone so they do not land in the waiting room.
+      self.leaveTimer = setTimeout(() => {
+        const currentMap = rooms.get(room);
+        const current = currentMap?.get(peerId);
+        if (!current || current.ws !== ws) return;
+        const wasAdmitted = current.admitted;
+        const wasHost = stickyHost(room) === peerId;
+        currentMap.delete(peerId);
+        if (wasHost) transferHost(room, currentMap, peerId);
+        if (wasAdmitted) {
+          const notice = JSON.stringify({
+            kind: 'signal',
+            from: peerId,
+            payload: { type: 'leave', from: peerId },
+          });
+          for (const member of currentMap.values()) {
+            if (member.admitted && member.ws.readyState === 1) member.ws.send(notice);
+          }
+          sendMeta(room);
+        } else {
+          sendWaiting(room, currentMap);
         }
-        sendMeta(room);
-      } else {
-        sendWaiting(room, map);
         cleanupEmpty(room);
-      }
-      cleanupEmpty(room);
+      }, 15000);
     });
 
     ws.on('error', () => {
