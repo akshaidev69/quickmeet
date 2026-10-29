@@ -1313,7 +1313,7 @@ async function toggleRecord() {
         faceCastReady: Boolean(recordReady?.length),
         hadPoll: Boolean(poll),
         endedForEveryone,
-        guest: !document.cookie.includes('lc_session'),
+        guest: false,
       }),
     );
   }, [catchUpEvents, chat, code, name, onLeave, peers, poll, recordReady]);

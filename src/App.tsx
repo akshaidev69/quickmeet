@@ -348,7 +348,7 @@ function AppRoutes() {
     setCode('');
     setAsHost(false);
     if (nextSummary) {
-      setSummary(nextSummary);
+      setSummary({ ...nextSummary, guest: !user });
       history.pushState({ view: 'summary' }, '', url);
       setView('summary');
       return;
@@ -475,7 +475,7 @@ function AppRoutes() {
     const summaryTitle = summary.title;
     return (
       <MeetingSummary
-        data={summary}
+        data={{ ...summary, guest: !user }}
         onDashboard={() => {
           setSummary(null);
           goApp();
