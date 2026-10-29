@@ -86,6 +86,16 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
+    public void onResume() {
+        super.onResume();
+        applyPipParams();
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().onResume();
+            this.bridge.getWebView().resumeTimers();
+        }
+    }
+
+    @Override
     public void onUserLeaveHint() {
         super.onUserLeaveHint();
         if (meetingActive && !suppressPip) {
@@ -147,7 +157,7 @@ public class MainActivity extends BridgeActivity {
 
     private PictureInPictureParams pipParams() {
         PictureInPictureParams.Builder builder = new PictureInPictureParams.Builder()
-            .setAspectRatio(new Rational(16, 9));
+            .setAspectRatio(new Rational(9, 16));
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             builder.setActions(pipActions());
         }

@@ -1635,19 +1635,32 @@ video.fx-hidden { opacity: 0; }
   border-top: 1px solid var(--line);
   align-items: center;
 }
-.composer input {
-  min-height: 32px;
-  height: 32px;
-  border-radius: 8px;
-  padding: 0 10px;
-  font-size: 12px;
+.composer input,
+.composer .chat-compose-input {
+  min-height: 44px;
+  height: 44px;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--text) !important;
+  background: var(--input) !important;
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  opacity: 1;
+}
+.composer input::placeholder,
+.composer .chat-compose-input::placeholder {
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
+  opacity: 1;
 }
 .composer .primary.slim {
-  min-height: 32px;
-  height: 32px;
-  padding: 0 10px;
-  font-size: 12px;
-  border-radius: 8px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0 14px;
+  font-size: 14px;
+  border-radius: 10px;
 }
 .hands { background: var(--warn); color: var(--warn-ink); border-radius: 8px; padding: 6px 8px; margin-bottom: 6px; font-size: 12px; }
 .hands ul { margin: 4px 0 0; padding-left: 16px; }
@@ -3827,14 +3840,17 @@ kbd {
 .room-meet .meet-mobile-main {
   position: absolute;
   inset: 0;
+  display: grid;
+  place-items: center;
+  place-content: center;
 }
 .room-meet .meet-mobile-main .tile {
-  width: 100%;
-  height: 100%;
-  max-height: none;
-  aspect-ratio: auto;
-  border-radius: 0;
-  box-shadow: none;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: var(--tile-aspect, 9 / 16);
+  border-radius: 16px;
 }
 .room-meet .meet-mobile-pip {
   position: absolute;
@@ -4353,19 +4369,36 @@ html.is-native .room-meet .tile-blur {
   display: none !important;
 }
 html.is-mobile .room-meet .grid.c1,
-html.is-native .room-meet .grid.c1 {
+html.is-native .room-meet .grid.c1,
+html.is-mobile .room-meet .meet-mobile-stage,
+html.is-native .room-meet .meet-mobile-stage {
   place-items: center;
   place-content: center;
 }
 html.is-mobile .room-meet .grid.c1 .tile,
-html.is-native .room-meet .grid.c1 .tile {
+html.is-native .room-meet .grid.c1 .tile,
+html.is-mobile .room-meet .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-main .tile {
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  min-height: 0;
+  aspect-ratio: 9 / 16;
+  border-radius: 16px;
+  box-shadow: 0 12px 28px rgba(16, 36, 28, 0.16);
+  transition: width 200ms ease, height 200ms ease, aspect-ratio 200ms ease, border-radius 200ms ease;
+}
+html.is-mobile .room-meet .grid.c1[data-aspect="auto"] .tile,
+html.is-native .room-meet .grid.c1[data-aspect="auto"] .tile,
+html.is-mobile .room-meet .meet-mobile-stage[data-aspect="auto"] .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-stage[data-aspect="auto"] .meet-mobile-main .tile {
   width: 100%;
   height: 100%;
   max-height: none;
   aspect-ratio: auto;
   border-radius: 0;
   box-shadow: none;
-  transition: width 200ms ease, height 200ms ease, aspect-ratio 200ms ease, border-radius 200ms ease;
 }
 html.is-mobile .room-meet .grid.c1[data-aspect="16:9"] .tile,
 html.is-mobile .room-meet .grid.c1[data-aspect="4:3"] .tile,
@@ -4374,12 +4407,21 @@ html.is-mobile .room-meet .grid.c1[data-aspect="9:16"] .tile,
 html.is-native .room-meet .grid.c1[data-aspect="16:9"] .tile,
 html.is-native .room-meet .grid.c1[data-aspect="4:3"] .tile,
 html.is-native .room-meet .grid.c1[data-aspect="1:1"] .tile,
-html.is-native .room-meet .grid.c1[data-aspect="9:16"] .tile {
-  aspect-ratio: var(--tile-aspect);
+html.is-native .room-meet .grid.c1[data-aspect="9:16"] .tile,
+html.is-mobile .room-meet .meet-mobile-stage[data-aspect="16:9"] .meet-mobile-main .tile,
+html.is-mobile .room-meet .meet-mobile-stage[data-aspect="4:3"] .meet-mobile-main .tile,
+html.is-mobile .room-meet .meet-mobile-stage[data-aspect="1:1"] .meet-mobile-main .tile,
+html.is-mobile .room-meet .meet-mobile-stage[data-aspect="9:16"] .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-stage[data-aspect="16:9"] .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-stage[data-aspect="4:3"] .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-stage[data-aspect="1:1"] .meet-mobile-main .tile,
+html.is-native .room-meet .meet-mobile-stage[data-aspect="9:16"] .meet-mobile-main .tile {
+  aspect-ratio: var(--tile-aspect, 9 / 16);
   width: auto;
   height: auto;
   max-width: 100%;
   max-height: 100%;
+  min-height: 0;
   border-radius: 16px;
 }
 html.is-mobile .room-meet .cmd,
@@ -4438,6 +4480,26 @@ html.is-native input,
 html.is-mobile select,
 html.is-native select {
   font-size: 16px; /* stops iOS zoom-on-focus */
+}
+html.is-mobile .composer input,
+html.is-native .composer input,
+html.is-mobile .chat-compose-input,
+html.is-native .chat-compose-input {
+  min-height: 44px !important;
+  height: 44px !important;
+  font-size: 16px !important;
+  line-height: 1.3;
+  color: #10241c !important;
+  background: #ffffff !important;
+  -webkit-text-fill-color: #10241c !important;
+  caret-color: #10241c;
+  opacity: 1 !important;
+}
+html.is-mobile .composer input::placeholder,
+html.is-native .composer input::placeholder {
+  color: #5b6b63 !important;
+  -webkit-text-fill-color: #5b6b63 !important;
+  opacity: 1;
 }
 
 /* Never leave hub content invisible after Custom Tabs / WebView resume */
@@ -4898,12 +4960,7 @@ html.is-native .hub-grid {
     height: 100%;
   }
   .room-meet .grid.c1 .tile {
-    width: 100%;
-    height: 100%;
-    max-height: none;
-    aspect-ratio: auto;
-    border-radius: 0;
-    box-shadow: none;
+    min-height: 0;
   }
   .room-meet .tile video,
   .room-meet .tile canvas.fx-canvas,
@@ -5018,9 +5075,11 @@ html.is-native .hub-grid {
   .room-meet .grid.c1 {
     height: 100%;
     min-height: 0;
+    place-items: center;
+    place-content: center;
   }
   .room-meet .grid.c1 .tile {
-    min-height: min(62dvh, 520px);
+    min-height: 0;
   }
 
   /* Side panels ? bottom sheets */
@@ -5029,7 +5088,7 @@ html.is-native .hub-grid {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(72px + env(safe-area-inset-bottom));
+    bottom: calc(72px + env(safe-area-inset-bottom) + var(--kb, 0px));
     top: auto;
     width: 100%;
     max-height: min(68dvh, 560px);
@@ -5123,7 +5182,7 @@ html.is-native .home-hub {
 html.is-native .room-meet .stage {
   background: #0e1411;
 }
-html.is-native .room-meet .grid.c1 .tile {
+html.is-native .room-meet .grid.c1[data-aspect="auto"] .tile {
   border-radius: 0;
   box-shadow: none;
 }

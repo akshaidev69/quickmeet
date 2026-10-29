@@ -96,6 +96,16 @@ public class MeetingChromePlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setSuppressPip(PluginCall call) {
+        boolean suppress = Boolean.TRUE.equals(call.getBoolean("suppress", false));
+        Activity activity = getActivity();
+        if (activity instanceof MainActivity) {
+            ((MainActivity) activity).setSuppressPip(suppress);
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
     public void enterPip(PluginCall call) {
         boolean entered = false;
         Activity activity = getActivity();

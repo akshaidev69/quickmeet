@@ -25,14 +25,37 @@ export const defaultFramePrefs: FramePrefs = {
   autoFloat: true,
 };
 
+export function isMobileShell() {
+  if (typeof document === 'undefined') return false;
+  const root = document.documentElement;
+  return (
+    root.classList.contains('is-mobile') ||
+    root.classList.contains('is-native') ||
+    root.dataset.shell === 'mobile' ||
+    root.dataset.shell === 'native' ||
+    window.matchMedia('(max-width: 820px)').matches
+  );
+}
+
 export function loadFramePrefs(): FramePrefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...defaultFramePrefs };
-    return { ...defaultFramePrefs, ...(JSON.parse(raw) as Partial<FramePrefs>), fit: { ...defaultFramePrefs.fit, ...((JSON.parse(raw) as FramePrefs).fit || {}) } };
+    return {
+      ...defaultFramePrefs,
+      ...(JSON.parse(raw) as Partial<FramePrefs>),
+      fit: { ...defaultFramePrefs.fit, ...((JSON.parse(raw) as FramePrefs).fit || {}) },
+    };
   } catch {
     return { ...defaultFramePrefs };
   }
+}
+
+/** Phone meetings always start 9:16 and Center me on. Desktop keeps saved prefs. */
+export function loadMeetingFramePrefs(): FramePrefs {
+  const prefs = loadFramePrefs();
+  if (!isMobileShell()) return prefs;
+  return { ...prefs, aspect: '9:16', centerMe: true };
 }
 
 export function saveFramePrefs(prefs: FramePrefs) {

@@ -4,6 +4,7 @@ import { isNativeApp } from './native';
 type MeetingChromePlugin = {
   setMeetingActive(options: { active: boolean }): Promise<void>;
   setControls(options: { micOn: boolean; camOn: boolean }): Promise<void>;
+  setSuppressPip(options: { suppress: boolean }): Promise<void>;
   enterPip(): Promise<{ entered: boolean }>;
   isInPip(): Promise<{ inPip: boolean }>;
   addListener(
@@ -18,12 +19,27 @@ type MeetingChromePlugin = {
 
 const MeetingChrome = registerPlugin<MeetingChromePlugin>('MeetingChrome');
 
+let wantMeetingActive = false;
+
 export async function setMeetingActive(active: boolean) {
+  wantMeetingActive = active;
   if (!isNativeApp()) return;
   try {
     await MeetingChrome.setMeetingActive({ active });
+    if (wantMeetingActive !== active) {
+      await MeetingChrome.setMeetingActive({ active: wantMeetingActive });
+    }
   } catch {
     /* older APK without plugin */
+  }
+}
+
+export async function setSuppressPip(suppress: boolean) {
+  if (!isNativeApp()) return;
+  try {
+    await MeetingChrome.setSuppressPip({ suppress });
+  } catch {
+    /* older APK */
   }
 }
 

@@ -50,7 +50,7 @@ import { isNativeApp } from '../lib/native';
 import { pauseAutoFloat } from '../lib/pipGate';
 import { onNativePipAction, onNativePipMode, setPipControls } from '../lib/nativeMeeting';
 import { detectFaceCenter, faceObjectPosition, tickFaceEase } from '../lib/faceFrame';
-import { aspectCss, loadFramePrefs, saveFramePrefs, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
+import { aspectCss, loadMeetingFramePrefs, saveFramePrefs, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
 import { buildCatchUp, harvestPromises, type CatchUpEvent } from '../lib/meetingIntel';
 import { beep } from '../lib/sound';
 import { useCaptions } from '../hooks/useCaptions';
@@ -379,7 +379,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const [bursts, setBursts] = useState<{ id: string; emoji: string; x: number; drift: number; scale: number; delay: number }[]>([]);
   const [viewportMobile, setViewportMobile] = useState(() => window.matchMedia('(max-width: 820px)').matches);
   const [boardOpen, setBoardOpen] = useState(false);
-  const [frame, setFrame] = useState<FramePrefs>(loadFramePrefs);
+  const [frame, setFrame] = useState<FramePrefs>(loadMeetingFramePrefs);
   const [pipNonce, setPipNonce] = useState(0);
   const [faceEase, setFaceEase] = useState({ x: 0.5, y: 0.5, zoom: 1 });
   const [boardEvents, setBoardEvents] = useState<CatchUpEvent[]>([]);
@@ -591,6 +591,26 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     sync();
     mq.addEventListener('change', sync);
     return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const sync = () => {
+      const covered = viewport ? Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop) : 0;
+      document.documentElement.style.setProperty('--kb', `${Math.round(covered)}px`);
+    };
+    sync();
+    viewport?.addEventListener('resize', sync);
+    viewport?.addEventListener('scroll', sync);
+    window.addEventListener('focusin', sync);
+    window.addEventListener('focusout', sync);
+    return () => {
+      viewport?.removeEventListener('resize', sync);
+      viewport?.removeEventListener('scroll', sync);
+      window.removeEventListener('focusin', sync);
+      window.removeEventListener('focusout', sync);
+      document.documentElement.style.removeProperty('--kb');
+    };
   }, []);
 
   useEffect(() => {
@@ -1949,7 +1969,13 @@ async function toggleRecord() {
               <div className="strip">{cameras.map((tile) => renderTile(tile))}</div>
             </div>
           ) : mobileFocus ? (
-            <div className="meet-mobile-stage">
+            <div
+              className="meet-mobile-stage"
+              data-aspect={frame.aspect}
+              style={{
+                ['--tile-aspect' as string]: aspectCss(frame.aspect) || '9 / 16',
+              }}
+            >
               <div className="meet-mobile-main">{renderTile(mobileMainTile, 'main')}</div>
               {mobilePipTile ? <div className="meet-mobile-pip">{renderTile(mobilePipTile, 'pip')}</div> : null}
             </div>
@@ -2118,6 +2144,13 @@ async function toggleRecord() {
                     <input ref={chatFileInput} type="file" className="sr-only" onChange={onChatFilePick} />
                     <input
                       ref={chatInput}
+                      className="chat-compose-input"
+                      type="text"
+                      inputMode="text"
+                      autoComplete="off"
+                      autoCorrect="on"
+                      spellCheck
+                      enterKeyHint="send"
                       value={chatText}
                       maxLength={2000}
                       placeholder="Message everyone"

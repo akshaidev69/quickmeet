@@ -359,7 +359,6 @@ export function MeetingPip({
         try {
           const { isNativeApp } = await import('../lib/native');
           if (isNativeApp()) {
-            if (reason === 'hide') return false;
             const { enterPip } = await import('../lib/nativeMeeting');
             if (await enterPip()) {
               autoOpened.current = reason !== 'manual';
@@ -502,12 +501,25 @@ export function MeetingPip({
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pagehide', onHide);
     window.addEventListener('pageshow', onShow);
+    let appHandle: { remove: () => Promise<void> } | null = null;
+    void import('@capacitor/app')
+      .then(({ App }) =>
+        App.addListener('appStateChange', ({ isActive }) => {
+          if (!isActive) onHide();
+          else onShow();
+        }),
+      )
+      .then((handle) => {
+        appHandle = handle;
+      })
+      .catch(() => undefined);
     return () => {
       window.clearTimeout(hideTimer);
       window.clearTimeout(showTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pagehide', onHide);
       window.removeEventListener('pageshow', onShow);
+      void appHandle?.remove();
     };
   }, [autoFloat]);
 
