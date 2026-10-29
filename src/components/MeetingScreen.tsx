@@ -460,6 +460,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     sendBoardCursor,
     sendBoardMeta,
     sendBoardSync,
+    boardTick,
   } = useRoom({
     code,
     name: loadRoomDisplayName(code, settings.name),
@@ -859,7 +860,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       remoteBoardWasOpen.current = false;
       setBoardOpen(false);
     }
-  }, [boardMeta.open, toast]);
+  }, [boardMeta.open, boardTick, toast]);
 
   useEffect(() => {
     if (canModerate && waiting.length > 0) {
@@ -1190,8 +1191,11 @@ async function toggleRecord() {
 
   function openSharedBoard() {
     setBoardOpen(true);
-    sendBoardMeta({ hostOnly: boardMeta.hostOnly, open: true, clock: Date.now() });
+    const meta = { hostOnly: false, open: true as const, clock: Date.now() };
+    sendBoardMeta(meta);
     sendBoardSync();
+    window.setTimeout(() => sendBoardMeta({ ...meta, clock: Date.now() }), 400);
+    window.setTimeout(() => sendBoardMeta({ ...meta, clock: Date.now() }), 1400);
   }
 
   function closeSharedBoard() {
@@ -1202,9 +1206,11 @@ async function toggleRecord() {
   }
 
   function toggleSharedBoard() {
-    if (boardOpen) closeSharedBoard();
+    if (boardOpen || boardMeta.open) closeSharedBoard();
     else openSharedBoard();
   }
+
+  const showBoard = Boolean(boardOpen || boardMeta.open);
 
   function popOut() {
     setPipNonce((value) => value + 1);
@@ -1845,7 +1851,7 @@ async function toggleRecord() {
 
       <div className="room-body">
         <div className="stage" ref={stageRef}>
-          {noticeKind && !boardOpen && (
+          {noticeKind && !showBoard && (
             <div className="notice-row" role="status">
               {noticeCounter && (
                 <span className="notice-counter" aria-label={`Notice ${noticeCounter}`}>
@@ -1946,7 +1952,7 @@ async function toggleRecord() {
               {noticeKind === 'server' && serverMessage && <div className="banner warn">{serverMessage}</div>}
             </div>
           )}
-          {boardOpen ? (
+          {showBoard ? (
             <Whiteboard
               myId={myId}
               name={name}
@@ -2270,7 +2276,7 @@ async function toggleRecord() {
         autoFloat={frame.autoFloat}
         docked={docked}
         panelOpen={Boolean(panel)}
-        boardOpen={boardOpen}
+        boardOpen={showBoard}
         mobile={viewportMobile}
         onMic={() => toggleMic()}
         onCam={() => toggleCam()}
@@ -2402,7 +2408,7 @@ async function toggleRecord() {
             className="desk-only"
             label="Whiteboard"
             shortcut="W"
-            live={boardOpen}
+            live={showBoard}
             onClick={toggleSharedBoard}
           >
             <IconBoard />

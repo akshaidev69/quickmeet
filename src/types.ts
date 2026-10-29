@@ -72,7 +72,7 @@ export type Signal =
   | { type: 'board-op'; from: string; object: BoardObject }
   | { type: 'board-live'; from: string; id: string; points: BoardPoint[]; color: string; size: number; opacity?: number; done?: boolean }
   | { type: 'board-cursor'; from: string; name: string; color: string; x: number; y: number }
-  | { type: 'board-meta'; from: string; meta: BoardMeta }
+  | { type: 'board-meta'; from: string; to?: string; meta: BoardMeta }
   | { type: 'board-sync'; from: string; to?: string; snapshot: BoardSnapshot };
 
 export type ThemeMode = 'light' | 'dark';

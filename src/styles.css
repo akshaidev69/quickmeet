@@ -7017,10 +7017,14 @@ html.is-mobile .tile-frame-btn {
 .wb-root {
   flex: 1;
   min-height: 0;
+  width: 100%;
+  height: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 132px;
   gap: 8px;
   padding: 8px;
+  position: relative;
+  z-index: 5;
   animation: wbIn 200ms ease;
 }
 @keyframes wbIn {

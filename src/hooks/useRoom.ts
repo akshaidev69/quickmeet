@@ -187,6 +187,7 @@ export function useRoom(options: Options) {
   const [boardTick, setBoardTick] = useState(0);
   const boardObjectsRef = useRef(new Map<string, BoardObject>());
   const boardMetaRef = useRef(emptyBoardMeta());
+  const pendingBoardMetaRef = useRef<BoardMeta | null>(null);
   const boardLiveRef = useRef<Record<string, { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number }>>({});
   const boardCursorsRef = useRef<Record<string, BoardCursor>>({});
 
@@ -577,6 +578,9 @@ export function useRoom(options: Options) {
               meta: boardMetaRef.current,
             },
           });
+          if (boardMetaRef.current.open) {
+            send({ type: 'board-meta', from: peerId, to: payload.from, meta: boardMetaRef.current });
+          }
         }
         return;
       }
@@ -979,7 +983,11 @@ export function useRoom(options: Options) {
       sendBoardMeta: (meta) => {
         boardMetaRef.current = mergeMeta(boardMetaRef.current, meta);
         bumpBoard();
-        send({ type: 'board-meta', from: peerId, meta: boardMetaRef.current });
+        const next = boardMetaRef.current;
+        send({ type: 'board-meta', from: peerId, meta: next });
+        if (socket && socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ kind: 'board', meta: next }));
+        }
       },
       sendBoardSync: (to) => {
         send({
@@ -990,6 +998,10 @@ export function useRoom(options: Options) {
         });
       },
     };
+    if (pendingBoardMetaRef.current) {
+      apiRef.current.sendBoardMeta(pendingBoardMetaRef.current);
+      pendingBoardMetaRef.current = null;
+    }
 
     const sendLeave = () => {
       try {
@@ -1129,7 +1141,13 @@ export function useRoom(options: Options) {
     [],
   );
   const sendBoardCursor = useCallback((x: number, y: number) => apiRef.current?.sendBoardCursor(x, y), []);
-  const sendBoardMeta = useCallback((meta: BoardMeta) => apiRef.current?.sendBoardMeta(meta), []);
+  const sendBoardMeta = useCallback((meta: BoardMeta) => {
+    if (!apiRef.current) {
+      pendingBoardMetaRef.current = meta;
+      return;
+    }
+    apiRef.current.sendBoardMeta(meta);
+  }, []);
   const sendBoardSync = useCallback((to?: string) => apiRef.current?.sendBoardSync(to), []);
   const dismissAsk = useCallback(() => setAsk(null), []);
 

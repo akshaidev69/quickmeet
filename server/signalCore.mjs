@@ -22,6 +22,8 @@ const roomLastActivity = new Map();
 const roomLocked = new Map();
 /** @type {Map<string, boolean>} */
 const allowRejoin = new Map();
+/** @type {Map<string, { hostOnly: boolean, clock: number, open: boolean }>} */
+const roomBoards = new Map();
 const SIGNAL_MAX_BYTES = 1_500_000;
 const HOST_SIGNAL_TYPES = new Set(['end-meeting', 'meeting-lock', 'kick', 'moderate', 'cast']);
 
@@ -136,6 +138,48 @@ export function attachSignal(httpServer) {
     coHosts.delete(room);
     roomLocked.delete(room);
     allowRejoin.delete(room);
+    roomBoards.delete(room);
+  }
+
+  function mergeBoardMeta(current, incoming) {
+    const nextClock = Number(incoming?.clock) || 0;
+    const prevClock = Number(current?.clock) || 0;
+    if (nextClock < prevClock) return current;
+    return {
+      clock: Math.max(prevClock, nextClock),
+      hostOnly: typeof incoming?.hostOnly === 'boolean' ? incoming.hostOnly : Boolean(current?.hostOnly),
+      open: typeof incoming?.open === 'boolean' ? incoming.open : Boolean(current?.open),
+    };
+  }
+
+  function saveBoardMeta(room, incoming) {
+    const current = roomBoards.get(room) || { hostOnly: false, clock: 0, open: false };
+    const next = mergeBoardMeta(current, incoming || {});
+    roomBoards.set(room, next);
+    return next;
+  }
+
+  function pushBoardMeta(room, map, meta, fromId) {
+    if (!meta) return;
+    const raw = JSON.stringify({
+      kind: 'signal',
+      from: fromId || 'room',
+      payload: { type: 'board-meta', from: fromId || 'room', meta },
+    });
+    for (const member of map.values()) {
+      if (member.admitted && member.ws.readyState === 1) member.ws.send(raw);
+    }
+  }
+
+  function sendBoardToPeer(ws, meta, fromId) {
+    if (!meta || !ws || ws.readyState !== 1) return;
+    ws.send(
+      JSON.stringify({
+        kind: 'signal',
+        from: fromId || 'room',
+        payload: { type: 'board-meta', from: fromId || 'room', meta },
+      }),
+    );
   }
 
   function cleanupEmpty(room) {
@@ -270,6 +314,7 @@ export function attachSignal(httpServer) {
             }),
           );
           sendMeta(room);
+          sendBoardToPeer(ws, roomBoards.get(room), 'room');
         } else {
           ws.send(JSON.stringify({ kind: 'gate', state: 'waiting', hostId }));
           sendWaiting(room, map);
@@ -315,6 +360,7 @@ export function attachSignal(httpServer) {
                 coHostIds: coHostIds(room, map),
               }),
             );
+            sendBoardToPeer(target.ws, roomBoards.get(room), 'room');
           }
           sendMeta(room);
           return;
@@ -384,10 +430,22 @@ export function attachSignal(httpServer) {
         return;
       }
 
+      if (msg.kind === 'board') {
+        if (!self.admitted) return;
+        const meta = saveBoardMeta(room, msg.meta);
+        pushBoardMeta(room, map, meta, peerId);
+        return;
+      }
+
       if (msg.kind !== 'signal' || !self.admitted) return;
       const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
       const type = String(payload.type || '');
       if (HOST_SIGNAL_TYPES.has(type) && !canModerate(room, peerId)) return;
+      if (type === 'board-meta') {
+        const meta = saveBoardMeta(room, payload.meta);
+        pushBoardMeta(room, map, meta, peerId);
+        return;
+      }
       if (type === 'meeting-lock') {
         roomLocked.set(room, Boolean(payload.locked));
       }
