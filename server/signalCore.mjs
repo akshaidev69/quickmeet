@@ -22,8 +22,9 @@ const roomLastActivity = new Map();
 const roomLocked = new Map();
 /** @type {Map<string, boolean>} */
 const allowRejoin = new Map();
-/** @type {Map<string, { hostOnly: boolean, clock: number, open: boolean }>} */
+/** @type {Map<string, { hostOnly: boolean, clock: number, open: boolean, view?: { left: number, top: number, width: number, height: number } }>} */
 const roomBoards = new Map();
+const BOARD_TEACH_TYPES = new Set(['board-op', 'board-live', 'board-view', 'board-sync']);
 const SIGNAL_MAX_BYTES = 1_500_000;
 const HOST_SIGNAL_TYPES = new Set(['end-meeting', 'meeting-lock', 'kick', 'moderate', 'cast']);
 
@@ -147,8 +148,9 @@ export function attachSignal(httpServer) {
     if (nextClock < prevClock) return current;
     return {
       clock: Math.max(prevClock, nextClock),
-      hostOnly: typeof incoming?.hostOnly === 'boolean' ? incoming.hostOnly : Boolean(current?.hostOnly),
+      hostOnly: true,
       open: typeof incoming?.open === 'boolean' ? incoming.open : Boolean(current?.open),
+      view: incoming?.view && typeof incoming.view === 'object' ? incoming.view : current?.view,
     };
   }
 
@@ -431,7 +433,7 @@ export function attachSignal(httpServer) {
       }
 
       if (msg.kind === 'board') {
-        if (!self.admitted) return;
+        if (!self.admitted || !canModerate(room, peerId)) return;
         const meta = saveBoardMeta(room, msg.meta);
         pushBoardMeta(room, map, meta, peerId);
         return;
@@ -442,10 +444,19 @@ export function attachSignal(httpServer) {
       const type = String(payload.type || '');
       if (HOST_SIGNAL_TYPES.has(type) && !canModerate(room, peerId)) return;
       if (type === 'board-meta') {
+        if (!canModerate(room, peerId)) return;
         const meta = saveBoardMeta(room, payload.meta);
         pushBoardMeta(room, map, meta, peerId);
         return;
       }
+      if (type === 'board-view' && payload.view) {
+        if (!canModerate(room, peerId)) return;
+        const current = roomBoards.get(room) || { hostOnly: true, clock: 0, open: true };
+        current.view = payload.view;
+        current.hostOnly = true;
+        roomBoards.set(room, current);
+      }
+      if (BOARD_TEACH_TYPES.has(type) && !canModerate(room, peerId)) return;
       if (type === 'meeting-lock') {
         roomLocked.set(room, Boolean(payload.locked));
       }

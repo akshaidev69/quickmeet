@@ -36,7 +36,9 @@ export type BoardObject = {
   deleted?: boolean;
 };
 
-export type BoardMeta = { hostOnly: boolean; clock: number; open?: boolean };
+export type BoardView = { left: number; top: number; width: number; height: number };
+
+export type BoardMeta = { hostOnly: boolean; clock: number; open?: boolean; view?: BoardView };
 
 export type BoardCursor = { id: string; name: string; color: string; x: number; y: number; ts: number };
 
@@ -47,7 +49,7 @@ export const NOTE_COLORS = ['#fde68a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#e9d5ff
 export const STROKE_PX = [2.5, 4.5, 8];
 
 export function emptyBoardMeta(): BoardMeta {
-  return { hostOnly: false, clock: 0, open: false };
+  return { hostOnly: true, clock: 0, open: false };
 }
 
 export function mergeObject(current: BoardObject | undefined, incoming: BoardObject): BoardObject {
@@ -63,6 +65,7 @@ export function mergeMeta(current: BoardMeta, incoming: BoardMeta): BoardMeta {
     clock: Math.max(current.clock || 0, incoming.clock || 0),
     hostOnly: incoming.hostOnly ?? current.hostOnly,
     open: incoming.open ?? current.open,
+    view: incoming.view ?? current.view,
   };
 }
 

@@ -25,6 +25,7 @@ import {
   type BoardObject,
   type BoardPoint,
   type BoardTool,
+  type BoardView,
   type ResizeHandle,
 } from '../lib/board';
 import { uid } from '../lib/code';
@@ -41,9 +42,11 @@ type Props = {
   live: LiveStroke[];
   filmstrip: ReactNode;
   canDraw: boolean;
+  followView?: BoardView | null;
   onOp: (object: BoardObject) => void;
   onLive: (stroke: LiveStroke & { done?: boolean }) => void;
   onCursor: (x: number, y: number) => void;
+  onView?: (view: BoardView) => void;
   onMeta: (meta: BoardMeta) => void;
   onSave: (blob: Blob) => void;
   onClose: () => void;
@@ -81,6 +84,15 @@ function worldOf(camera: Camera, clientX: number, clientY: number, rect: DOMRect
   };
 }
 
+function cameraFromView(view: BoardView, width: number, height: number): Camera {
+  const zoom = Math.max(0.15, Math.min(4, Math.min(width / Math.max(8, view.width), height / Math.max(8, view.height))));
+  return {
+    zoom,
+    x: (width - view.width * zoom) / 2 - view.left * zoom,
+    y: (height - view.height * zoom) / 2 - view.top * zoom,
+  };
+}
+
 export function Whiteboard({
   myId,
   name,
@@ -91,9 +103,11 @@ export function Whiteboard({
   live,
   filmstrip,
   canDraw,
+  followView,
   onOp,
   onLive,
   onCursor,
+  onView,
   onMeta,
   onSave,
   onClose,
@@ -149,6 +163,30 @@ export function Whiteboard({
   colorRef.current = color;
   const sizeRef = useRef(size);
   sizeRef.current = size;
+  const onViewRef = useRef(onView);
+  onViewRef.current = onView;
+  const viewHold = useRef(0);
+
+  function publishView() {
+    if (!canDraw || !onViewRef.current) return;
+    const fire = () => {
+      const wrap = wrapRef.current;
+      if (!wrap || wrap.clientWidth < 8 || wrap.clientHeight < 8) return;
+      const cam = cameraRef.current;
+      onViewRef.current?.({
+        left: -cam.x / cam.zoom,
+        top: -cam.y / cam.zoom,
+        width: wrap.clientWidth / cam.zoom,
+        height: wrap.clientHeight / cam.zoom,
+      });
+    };
+    fire();
+    if (viewHold.current) return;
+    viewHold.current = window.setTimeout(() => {
+      viewHold.current = 0;
+      fire();
+    }, 80);
+  }
 
   const bumpClock = () => {
     const seen = Math.max(clockRef.current, meta.clock, ...objectsRef.current.map((item) => item.clock));
@@ -189,7 +227,8 @@ export function Whiteboard({
     cameraRef.current = next;
     setCamera(next);
     dirty.current = true;
-  }, []);
+    publishView();
+  }, [canDraw]);
 
   useEffect(() => {
     objects.forEach((item) => {
@@ -197,6 +236,34 @@ export function Whiteboard({
     });
     dirty.current = true;
   }, [objects, live, cursors, camera, selected, textDraft]);
+
+  useEffect(() => {
+    if (canDraw || !followView) return;
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    const next = cameraFromView(followView, wrap.clientWidth, wrap.clientHeight);
+    cameraRef.current = next;
+    setCamera(next);
+    dirty.current = true;
+  }, [canDraw, followView]);
+
+  useEffect(() => {
+    if (canDraw) {
+      publishView();
+      return undefined;
+    }
+    const wrap = wrapRef.current;
+    if (!wrap) return undefined;
+    const ro = new ResizeObserver(() => {
+      if (!followView) return;
+      const next = cameraFromView(followView, wrap.clientWidth, wrap.clientHeight);
+      cameraRef.current = next;
+      setCamera(next);
+      dirty.current = true;
+    });
+    ro.observe(wrap);
+    return () => ro.disconnect();
+  }, [canDraw, followView]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -408,8 +475,8 @@ export function Whiteboard({
   }
 
   function onWheel(event: React.WheelEvent) {
-    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
+    if (!canDraw) return;
     const wrap = wrapRef.current;
     if (!wrap) return;
     const rect = wrap.getBoundingClientRect();
@@ -424,6 +491,7 @@ export function Whiteboard({
     cameraRef.current = next;
     setCamera(next);
     dirty.current = true;
+    publishView();
   }
 
   function pointerDown(event: ReactPointerEvent<HTMLCanvasElement>) {
@@ -431,8 +499,9 @@ export function Whiteboard({
     if (!wrap) return;
     const rect = wrap.getBoundingClientRect();
     const world = worldOf(cameraRef.current, event.clientX, event.clientY, rect);
-    onCursor(world.x, world.y);
+    if (canDraw) onCursor(world.x, world.y);
     startRef.current = world;
+    if (!canDraw) return;
     if (tool === 'text' || tool === 'note') {
       if (!canDraw) return;
       placingRef.current = false;
@@ -556,11 +625,13 @@ export function Whiteboard({
       cameraRef.current = next;
       setCamera(next);
       dirty.current = true;
+      publishView();
       return;
     }
     const rect = wrap.getBoundingClientRect();
     const world = worldOf(cameraRef.current, event.clientX, event.clientY, rect);
-    onCursor(world.x, world.y);
+    if (canDraw) onCursor(world.x, world.y);
+    if (!canDraw) return;
     if (!drawing.current) {
       const hoverItem =
         (selected.length === 1 && objects.find((item) => item.id === selected[0])) ||
@@ -575,6 +646,7 @@ export function Whiteboard({
       cameraRef.current = next;
       setCamera(next);
       dirty.current = true;
+      publishView();
       return;
     }
     if (resizeRef.current) {
@@ -719,6 +791,7 @@ export function Whiteboard({
 
   async function onDrop(event: React.DragEvent) {
     event.preventDefault();
+    if (!canDraw) return;
     const file = event.dataTransfer.files[0];
     if (file && file.type.startsWith('image/')) {
       const wrap = wrapRef.current?.getBoundingClientRect();
@@ -732,7 +805,7 @@ export function Whiteboard({
       const typing =
         event.target instanceof HTMLElement &&
         (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable);
-      if (typing) return;
+      if (typing || !canDraw) return;
       const file = [...(event.clipboardData?.items || [])].find((item) => item.type.startsWith('image/'))?.getAsFile();
       if (file) void addImage(file);
     };
@@ -764,10 +837,12 @@ export function Whiteboard({
     : null;
 
   return (
-    <div className="wb-root" data-hide-tools={hiddenBar ? '1' : '0'}>
-      <div className="wb-filmstrip" aria-label="People on the board">
-        {filmstrip}
-      </div>
+    <div className="wb-root" data-hide-tools={hiddenBar ? '1' : '0'} data-role={canDraw ? 'teacher' : 'guest'}>
+      {canDraw && (
+        <div className="wb-filmstrip" aria-label="People on the board">
+          {filmstrip}
+        </div>
+      )}
       <div
         className="wb-canvas-wrap"
         ref={wrapRef}
@@ -856,7 +931,7 @@ export function Whiteboard({
             placeholder={textDraft.note ? 'Sticky note' : 'Type here'}
           />
         )}
-        <div className="wb-toolbar" role="toolbar" aria-label="Whiteboard tools">
+        {canDraw && <div className="wb-toolbar" role="toolbar" aria-label="Whiteboard tools">
           {TOOLS.map((item) => (
             <button
               key={item.id}
@@ -917,7 +992,8 @@ export function Whiteboard({
               Area
             </button>
           )}
-        </div>
+        </div>}
+        {canDraw && (
         <div className="wb-side">
           <button type="button" onClick={fitContent} title="Fit to content">
             Fit
@@ -938,36 +1014,20 @@ export function Whiteboard({
             Save
           </button>
           {isHost && (
-            <>
-              <button
-                type="button"
-                className={meta.hostOnly ? undefined : 'on'}
-                title={meta.hostOnly ? 'Only the host can draw' : 'Everyone can see and draw'}
-                onClick={() =>
-                  onMeta({
-                    hostOnly: !meta.hostOnly,
-                    open: true,
-                    clock: bumpClock(),
-                  })
-                }
-              >
-                {meta.hostOnly ? 'Host only' : 'Everyone'}
-              </button>
-              <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
-                Clear
-              </button>
-            </>
+            <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
+              Clear
+            </button>
           )}
           <button type="button" className="wb-close" onClick={onClose}>
             Close
           </button>
         </div>
-        {minimap && bounds && (
+        )}
+        {canDraw && minimap && bounds && (
           <div className="wb-minimap" aria-hidden="true">
             <b style={{ left: `${Math.max(0, Math.min(90, minimap.x * 100))}%`, top: `${Math.max(0, Math.min(90, minimap.y * 100))}%` }} />
           </div>
         )}
-        {!canDraw && <p className="wb-lock">Only the host can draw right now</p>}
         {confirmClear && (
           <div className="wb-confirm-scrim">
             <div className="wb-confirm" role="dialog" aria-labelledby="wb-clear-title" aria-modal="true">

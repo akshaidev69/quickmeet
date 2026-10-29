@@ -459,7 +459,9 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     sendBoardLive,
     sendBoardCursor,
     sendBoardMeta,
+    sendBoardView,
     sendBoardSync,
+    boardView,
     boardTick,
   } = useRoom({
     code,
@@ -1191,7 +1193,7 @@ async function toggleRecord() {
 
   function openSharedBoard() {
     setBoardOpen(true);
-    const meta = { hostOnly: false, open: true as const, clock: Date.now() };
+    const meta = { hostOnly: true, open: true as const, clock: Date.now() };
     sendBoardMeta(meta);
     sendBoardSync();
     window.setTimeout(() => sendBoardMeta({ ...meta, clock: Date.now() }), 400);
@@ -1961,11 +1963,13 @@ async function toggleRecord() {
               meta={boardMeta}
               cursors={boardCursors}
               live={boardLive}
-              canDraw={!boardMeta.hostOnly || isHost || isCoHost}
+              canDraw={isHost || isCoHost}
+              followView={isHost || isCoHost ? null : boardView || boardMeta.view || null}
               filmstrip={<div className="strip wb-people">{cameras.map((tile) => renderTile(tile))}</div>}
               onOp={sendBoardOp}
               onLive={sendBoardLive}
               onCursor={sendBoardCursor}
+              onView={isHost || isCoHost ? sendBoardView : undefined}
               onMeta={sendBoardMeta}
               onSave={(blob) => {
                 const url = URL.createObjectURL(blob);

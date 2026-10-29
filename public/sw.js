@@ -1,4 +1,4 @@
-const CACHE = 'letsconnect-shell-v2';
+const CACHE = 'letsconnect-shell-v3';
 const SHELL = ['/', '/app', '/logo.svg', '/favicon.png'];
 
 self.addEventListener('install', (event) => {

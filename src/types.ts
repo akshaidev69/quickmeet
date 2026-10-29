@@ -34,7 +34,7 @@ export type Poll = {
   owner: string;
 };
 
-import type { BoardMeta, BoardObject, BoardPoint, BoardSnapshot } from './lib/board';
+import type { BoardMeta, BoardObject, BoardPoint, BoardSnapshot, BoardView } from './lib/board';
 
 export type RecordCastSignal = {
   peerIds: string[];
@@ -72,6 +72,7 @@ export type Signal =
   | { type: 'board-op'; from: string; object: BoardObject }
   | { type: 'board-live'; from: string; id: string; points: BoardPoint[]; color: string; size: number; opacity?: number; done?: boolean }
   | { type: 'board-cursor'; from: string; name: string; color: string; x: number; y: number }
+  | { type: 'board-view'; from: string; view: BoardView }
   | { type: 'board-meta'; from: string; to?: string; meta: BoardMeta }
   | { type: 'board-sync'; from: string; to?: string; snapshot: BoardSnapshot };
 

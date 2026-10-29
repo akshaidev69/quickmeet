@@ -10,6 +10,7 @@ import {
   type BoardObject,
   type BoardPoint,
   type BoardSnapshot,
+  type BoardView,
 } from '../lib/board';
 import { colorFor } from '../lib/people';
 import { safeName, uid } from '../lib/code';
@@ -96,6 +97,7 @@ type RoomApi = {
   sendBoardLive: (payload: { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number; done?: boolean }) => void;
   sendBoardCursor: (x: number, y: number) => void;
   sendBoardMeta: (meta: BoardMeta) => void;
+  sendBoardView: (view: BoardView) => void;
   sendBoardSync: (to?: string) => void;
 };
 
@@ -190,6 +192,7 @@ export function useRoom(options: Options) {
   const pendingBoardMetaRef = useRef<BoardMeta | null>(null);
   const boardLiveRef = useRef<Record<string, { id: string; points: BoardPoint[]; color: string; size: number; opacity?: number }>>({});
   const boardCursorsRef = useRef<Record<string, BoardCursor>>({});
+  const boardViewRef = useRef<BoardView | null>(null);
 
   const nameRef = useRef(options.name);
   const micRef = useRef(options.micOn);
@@ -745,8 +748,15 @@ export function useRoom(options: Options) {
         bumpBoard();
         return;
       }
+      if (payload.type === 'board-view') {
+        boardViewRef.current = payload.view;
+        boardMetaRef.current = { ...boardMetaRef.current, view: payload.view };
+        bumpBoard();
+        return;
+      }
       if (payload.type === 'board-meta') {
         boardMetaRef.current = mergeMeta(boardMetaRef.current, payload.meta);
+        if (payload.meta.view) boardViewRef.current = payload.meta.view;
         bumpBoard();
         return;
       }
@@ -758,6 +768,7 @@ export function useRoom(options: Options) {
     const applyBoardSnapshot = (snapshot: BoardSnapshot) => {
       applySnapshot(boardObjectsRef.current, snapshot);
       boardMetaRef.current = mergeMeta(boardMetaRef.current, snapshot.meta);
+      if (snapshot.meta.view) boardViewRef.current = snapshot.meta.view;
       bumpBoard();
     };
 
@@ -989,6 +1000,11 @@ export function useRoom(options: Options) {
           socket.send(JSON.stringify({ kind: 'board', meta: next }));
         }
       },
+      sendBoardView: (view) => {
+        boardViewRef.current = view;
+        boardMetaRef.current = { ...boardMetaRef.current, view };
+        send({ type: 'board-view', from: peerId, view });
+      },
       sendBoardSync: (to) => {
         send({
           type: 'board-sync',
@@ -1148,6 +1164,7 @@ export function useRoom(options: Options) {
     }
     apiRef.current.sendBoardMeta(meta);
   }, []);
+  const sendBoardView = useCallback((view: BoardView) => apiRef.current?.sendBoardView(view), []);
   const sendBoardSync = useCallback((to?: string) => apiRef.current?.sendBoardSync(to), []);
   const dismissAsk = useCallback(() => setAsk(null), []);
 
@@ -1228,7 +1245,9 @@ export function useRoom(options: Options) {
     sendBoardLive,
     sendBoardCursor,
     sendBoardMeta,
+    sendBoardView,
     sendBoardSync,
+    boardView: boardViewRef.current,
     boardTick,
   };
 }
