@@ -33,6 +33,7 @@ import { LookMenu, ThemeButton } from './LookControls';
 import { useOutsideDismiss } from './ui';
 import { useSelfLook } from '../hooks/useSelfLook';
 import { loadRoomDisplayName, safeName } from '../lib/code';
+import { shareInviteUrl } from '../lib/invite';
 import type { MeetingSummaryData } from './MeetingSummary';
 import { acquireMedia } from '../lib/media';
 import { getPreviewVideo, mountPreview } from '../lib/previewVideo';
@@ -168,9 +169,11 @@ function readNetworkQuality(): 'Good' | 'Fair' {
   const conn = (navigator as Navigator & { connection?: { effectiveType?: string; downlink?: number } }).connection;
   if (!conn) return 'Good';
   const type = conn.effectiveType;
-  if (type === 'slow-2g' || type === '2g') return 'Fair';
-  if (type === '3g') return 'Fair';
-  if (typeof conn.downlink === 'number' && conn.downlink < 1.2) return 'Fair';
+  const downlink = typeof conn.downlink === 'number' ? conn.downlink : Infinity;
+  // Chrome desktop often reports 3g even on Wi-Fi. Trust throughput before the label.
+  if (type === 'slow-2g' || type === '2g') return downlink < 1.2 ? 'Fair' : 'Good';
+  if (type === '3g' && downlink < 1.2) return 'Fair';
+  if (downlink < 1.2) return 'Fair';
   return 'Good';
 }
 
@@ -193,9 +196,7 @@ function tileFitFor(frame: FramePrefs, key: string, portrait: boolean, compact: 
 }
 
 function inviteLink(code: string) {
-  const url = new URL(location.href);
-  url.searchParams.set('room', code);
-  return url.toString();
+  return shareInviteUrl(code);
 }
 
 const CHAT_EMOJIS = ['\u{1F600}', '\u{1F602}', '\u{1F44D}', '\u{2764}\u{FE0F}', '\u{1F389}', '\u{1F64F}', '\u{1F44F}', '\u{1F525}'] as const;
@@ -511,17 +512,12 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     if (typeof BroadcastChannel === 'undefined') return;
     const channel = new BroadcastChannel(`letsconnect-room:${code}`);
     const tabId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    let claimed = false;
+    let warned = false;
     const onMessage = (event: MessageEvent) => {
       const data = event.data as { type?: string; tabId?: string };
-      if (data?.type === 'here' && data.tabId && data.tabId !== tabId && !claimed) {
-        claimed = true;
-        const stay = window.confirm("You're already in this meeting in another tab. Switch here?");
-        channel.postMessage({ type: stay ? 'yield' : 'keep', tabId });
-        if (!stay) finishLeaveRef.current?.();
-      }
-      if (data?.type === 'yield' && data.tabId !== tabId) {
-        finishLeaveRef.current?.();
+      if (data?.type === 'here' && data.tabId && data.tabId !== tabId && !warned) {
+        warned = true;
+        toast('This meeting is also open in another tab on this computer.');
       }
     };
     channel.addEventListener('message', onMessage);
@@ -530,7 +526,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
       channel.removeEventListener('message', onMessage);
       channel.close();
     };
-  }, [code]);
+  }, [code, toast]);
   const isCoHost = coHostIds.includes(myId);
   const canModerate = isHost || isCoHost;
   const canRecord = canModerate;
@@ -2010,9 +2006,15 @@ async function toggleRecord() {
               className={gridClass(cameras.length)}
               data-aspect={frame.aspect}
               style={{
-                ['--tile-aspect' as string]: aspectCss(frame.aspect) || 'auto',
+                ['--tile-aspect' as string]: aspectCss(frame.aspect) || '16 / 9',
                 ['--tile-ar' as string]: String(
-                  frame.aspect === '4:3' ? 4 / 3 : frame.aspect === '1:1' ? 1 : frame.aspect === '9:16' ? 9 / 16 : frame.aspect === '16:9' ? 16 / 9 : 0,
+                  frame.aspect === '4:3'
+                    ? 4 / 3
+                    : frame.aspect === '1:1'
+                      ? 1
+                      : frame.aspect === '9:16'
+                        ? 9 / 16
+                        : 16 / 9,
                 ),
               }}
             >
@@ -3783,6 +3785,7 @@ function PollCard({
   onHide: () => void;
 }) {
   const mine = poll.votes[myId];
+  const voteCount = Object.keys(poll.votes).length;
   return (
     <section className="poll" aria-label="Poll">
       <header>
@@ -3808,7 +3811,8 @@ function PollCard({
         );
       })}
       <p>
-        {Object.keys(poll.votes).length} votes{poll.closed ? ' · Closed' : ''}
+        {voteCount} vote{voteCount === 1 ? '' : 's'}
+        {poll.closed ? ' · Closed' : ''}
         {mine !== undefined ? ' · You voted' : ''}
       </p>
       {canEnd && !poll.closed && (

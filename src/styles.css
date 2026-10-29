@@ -1964,10 +1964,11 @@ video.fx-hidden { opacity: 0; }
   z-index: 2;
 }
 .room-meet .backdrop {
-  z-index: 70;
+  /* Below the control bar (60) and topbar (80) so More / Look / Chat menus stay clickable. */
+  z-index: 45;
 }
 .room-meet .popover {
-  z-index: 62;
+  z-index: 80;
   pointer-events: auto;
 }
 .room-meet .look-pop {
@@ -4127,6 +4128,19 @@ kbd {
   max-height: min(78vh, 720px);
   height: auto;
 }
+.room-meet .grid[data-aspect="auto"] {
+  max-width: none;
+  place-content: stretch;
+  place-items: stretch;
+}
+.room-meet .grid[data-aspect="auto"] .tile,
+.room-meet .grid.c1[data-aspect="auto"] .tile {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: unset;
+}
 .room-meet .cmd,
 .room-meet .leave {
   width: auto;
@@ -5956,6 +5970,12 @@ html.is-native .room-meet .tile canvas.fx-canvas {
     width: min(100%, 900px);
     max-height: min(70vh, 640px);
   }
+  .room-meet .grid.c1[data-aspect="auto"] .tile {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+  }
 }
 
 /* Desktop */
@@ -7449,6 +7469,89 @@ html[data-shell="mobile"] .seg button {
   width: min(420px, calc(100% - 32px));
   margin: 0 auto 12px;
 }
+.join-gate {
+  min-height: 100dvh;
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 28px;
+  padding: 20px 20px 40px;
+  background:
+    radial-gradient(700px 360px at 50% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%),
+    var(--bg);
+  color: var(--text);
+}
+.join-gate-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 440px;
+  width: 100%;
+  margin: 0 auto;
+}
+.join-gate-card {
+  width: min(440px, 100%);
+  margin: 0 auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 28px 24px;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+}
+.join-gate-kicker {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-ink);
+}
+.join-gate-card h1 {
+  margin: 0;
+  letter-spacing: -0.04em;
+}
+.join-gate-code {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 4px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px dashed var(--line);
+  background: var(--surface-2, color-mix(in srgb, var(--accent) 8%, var(--surface)));
+  color: var(--text);
+  font: inherit;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  cursor: pointer;
+}
+.join-gate-code span {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+.join-gate-btn {
+  width: 100%;
+  min-height: 48px;
+}
+.join-gate-web {
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.join-gate-web:hover {
+  text-decoration: underline;
+}
+
 .legal-page {
   min-height: 100dvh;
   background: var(--bg);

@@ -14,9 +14,12 @@ export function meetingCode() {
 }
 
 export function compactCode(raw: string) {
-  const fromUrl = raw.match(/room=([a-zA-Z0-9-]+)/);
-  const source = fromUrl ? fromUrl[1] : raw;
-  return source.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+  const text = String(raw || '').trim();
+  const fromRoom = text.match(/[?&#]room=([a-zA-Z0-9-]+)/i);
+  if (fromRoom?.[1]) return fromRoom[1].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+  const fromJoin = text.match(/\/(?:join|meeting|room)\/([a-zA-Z0-9-]+)/i);
+  if (fromJoin?.[1]) return fromJoin[1].toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
+  return text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10);
 }
 
 export function formatCode(raw: string) {

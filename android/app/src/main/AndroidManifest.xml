@@ -60,6 +60,26 @@
                 <data android:scheme="letsconnect" android:host="auth" />
             </intent-filter>
 
+            <!-- Shared meeting links: letsconnect://join?room= -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="letsconnect" android:host="join" />
+                <data android:scheme="letsconnect" android:host="app" />
+            </intent-filter>
+
+            <!-- https://…/join?room= opens the app when it is installed -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="quickmeet-qi4p.onrender.com"
+                    android:pathPrefix="/join" />
+            </intent-filter>
+
         </activity>
 
         <provider

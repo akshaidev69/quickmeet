@@ -4,6 +4,7 @@ import { useAuth } from '../lib/auth';
 import { fetchMeetings, removeMeeting, updateProfile, type SavedMeeting } from '../lib/api';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode, safeName, uid } from '../lib/code';
 import { formatDurationLabel, formatMeetingDayKey, formatMeetingWhen } from '../lib/formatTime';
+import { shareInviteUrl } from '../lib/invite';
 import { isNativeApp } from '../lib/native';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
 
@@ -229,12 +230,13 @@ export function HomeScreen({
     for (const item of recent) {
       const formatted = formatCode(item.code);
       if (byCode.has(formatted)) continue;
+      const live = Boolean(inCallCode && formatCode(inCallCode) === formatted);
       byCode.set(formatted, {
         id: `recent-${formatted}`,
         code: formatted,
         title: item.title,
         subtitle: whenLabel(item.ts),
-        status: 'ended',
+        status: live ? 'live' : 'ended',
         hosted: wasHosted(formatted, scheduleCodes),
         recentOnly: true,
       });
@@ -246,7 +248,7 @@ export function HomeScreen({
       if (diff !== 0) return diff;
       return a.title.localeCompare(b.title);
     });
-  }, [cloud, recent, schedule, scheduleCodes]);
+  }, [cloud, inCallCode, recent, schedule, scheduleCodes]);
 
   const filteredRecent = useMemo(() => {
     let rows = dashRows;
@@ -422,19 +424,17 @@ export function HomeScreen({
         <button type="button" className="dash-btn dash-btn-ghost" onClick={() => openRow(row)}>
           {primaryLabel}
         </button>
+        <button
+          type="button"
+          className="dash-btn dash-btn-ghost"
+          onClick={() => void navigator.clipboard?.writeText(shareInviteUrl(row.code))}
+        >
+          Copy link
+        </button>
         {row.cloudId && (
-          <>
-            <button
-              type="button"
-              className="dash-btn dash-btn-ghost"
-              onClick={() => void navigator.clipboard?.writeText(`${location.origin}/app?room=${row.code}`)}
-            >
-              Copy link
-            </button>
-            <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void forgetCloud(row.cloudId!)}>
-              Remove
-            </button>
-          </>
+          <button type="button" className="dash-btn dash-btn-ghost" onClick={() => void forgetCloud(row.cloudId!)}>
+            Remove
+          </button>
         )}
         {row.scheduleId && (
           <button
@@ -742,7 +742,7 @@ export function HomeScreen({
             </div>
             {daySchedule.length === 0 && dayLive.length === 0 ? (
               <div className="dash-empty">
-                <p>No meetings on {selectedDayLabel.toLowerCase()}.</p>
+                <p>{selectedDayLabel === 'Today' ? 'No meetings today.' : `No meetings on ${selectedDayLabel.toLowerCase()}.`}</p>
                 <button type="button" className="dash-btn dash-btn-ghost" onClick={() => setPlanning(true)}>
                   Schedule one
                 </button>

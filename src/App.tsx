@@ -2,6 +2,7 @@ import { Component, type ReactNode, useEffect, useState } from 'react';
 import { AuthScreen } from './components/AuthScreen';
 import { GoogleAuthBridge } from './components/GoogleAuthBridge';
 import { HomeScreen } from './components/HomeScreen';
+import { JoinGate } from './components/JoinGate';
 import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
 import { LegalPage } from './components/LegalPage';
@@ -11,6 +12,7 @@ import { AuthProvider, useAuth } from './lib/auth';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
 import { saveMeeting } from './lib/api';
+import { consumeJoinDeepLink, rememberWebJoin, roomFromLocation, wantsJoinGate, webJoinUrl } from './lib/invite';
 import { isNativeApp } from './lib/native';
 import {
   clearActiveRoom,
@@ -27,16 +29,20 @@ import {
 // clearActiveRoom used on auth success so register never resumes a stale room
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge' | 'privacy' | 'terms';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge' | 'privacy' | 'terms' | 'join-gate';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
-  const room = new URLSearchParams(location.search).get('room');
+  const room = roomFromLocation();
   if (path === '/auth/google-bridge') return 'google-bridge';
   if (path === '/privacy') return 'privacy';
   if (path === '/terms') return 'terms';
   if (path === '/login') return 'login';
   if (path === '/register' || path === '/signup') return 'register';
+  if (path === '/join' || path.startsWith('/join/')) {
+    if (room && wantsJoinGate(room)) return 'join-gate';
+    return room ? 'home' : 'missing';
+  }
   if (path === '/app' || room) return 'home';
   // Capacitor / phones should never land on the marketing website shell.
   if (isNativeApp()) return 'home';
@@ -44,9 +50,10 @@ function pathPhase(): Phase {
 }
 
 function routeFromUrl(instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
-  const room = new URLSearchParams(location.search).get('room');
+  const room = roomFromLocation();
   const base = pathPhase();
   if (base === 'privacy' || base === 'terms' || base === 'google-bridge') return { view: base, code: '' };
+  if (base === 'join-gate' && room) return { view: 'join-gate', code: room };
   if (room) {
     const code = formatCode(room);
     if (!isFullCode(code) || !isValidMeetingCode(code)) return { view: 'missing', code: '' };
@@ -100,6 +107,7 @@ function AppRoutes() {
   const [summary, setSummary] = useState<MeetingSummaryData | null>(null);
   const [boot, setBoot] = useState(true);
   const [docked, setDocked] = useState(false);
+  const [nativeLaunchReady, setNativeLaunchReady] = useState(!isNativeApp());
 
   useEffect(() => {
     saveSettings(settings);
@@ -118,7 +126,35 @@ function AppRoutes() {
   }, []);
 
   useEffect(() => {
-    if (loading) return;
+    if (!isNativeApp()) return;
+    let cancelled = false;
+    let handle: { remove: () => Promise<void> } | undefined;
+    void (async () => {
+      try {
+        const { App: CapApp } = await import('@capacitor/app');
+        const launch = await CapApp.getLaunchUrl();
+        if (!cancelled && launch?.url) consumeJoinDeepLink(launch.url);
+        handle = await CapApp.addListener('appUrlOpen', (event) => {
+          if (!consumeJoinDeepLink(event.url)) return;
+          const next = routeFromUrl(loadSettings().instantJoin, Boolean(user));
+          setCode(next.code);
+          setAsHost(Boolean(next.code && sessionStorage.getItem(`lc-host:${next.code}`) === '1'));
+          setView(next.view === 'join-gate' ? (loadSettings().instantJoin ? 'room' : 'lobby') : next.view);
+          setBoot(false);
+        });
+      } catch {
+        /* web or plugin missing */
+      }
+      if (!cancelled) setNativeLaunchReady(true);
+    })();
+    return () => {
+      cancelled = true;
+      void handle?.remove();
+    };
+  }, [user]);
+
+  useEffect(() => {
+    if (loading || !nativeLaunchReady) return;
     const next = routeFromUrl(settings.instantJoin, Boolean(user));
     setCode(next.code);
     const hostFlag =
@@ -128,6 +164,9 @@ function AppRoutes() {
     setView(next.view);
     setBoot(false);
     const path = location.pathname.replace(/\/+$/, '') || '/';
+    if ((next.view === 'lobby' || next.view === 'room') && next.code && (path === '/join' || path.startsWith('/join/'))) {
+      history.replaceState({ view: next.view }, '', webJoinUrl(next.code));
+    }
     if (user && (path === '/login' || path === '/register' || path === '/' || path === '')) {
       if (path === '/' || path === '') {
         if (!next.code) {
@@ -151,12 +190,12 @@ function AppRoutes() {
       }
     }
     if (isNativeApp()) {
-      const hasRoom = Boolean(new URLSearchParams(location.search).get('room'));
+      const hasRoom = Boolean(roomFromLocation());
       if (!user && !hasRoom && path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms') {
         navigate('/login', true);
       }
     }
-  }, [loading, user, settings.instantJoin]);
+  }, [loading, user, settings.instantJoin, nativeLaunchReady]);
 
   useEffect(() => {
     const title =
@@ -168,7 +207,9 @@ function AppRoutes() {
             ? 'Sign up · LetsConnect'
             : view === 'missing'
               ? 'Meeting not found · LetsConnect'
-              : view === 'home' || !code
+              : view === 'join-gate'
+                ? `Join ${code} · LetsConnect`
+                : view === 'home' || !code
                 ? 'LetsConnect'
                 : `${code} · LetsConnect`;
     document.title = title;
@@ -338,6 +379,22 @@ function AppRoutes() {
     );
   }
 
+  if (view === 'join-gate' && code) {
+    return (
+      <JoinGate
+        code={code}
+        theme={settings.theme}
+        onTheme={(theme) => setSettings({ ...settings, theme })}
+        onHome={goMarket}
+        onContinueWeb={() => {
+          rememberWebJoin(code);
+          history.replaceState({ view: 'lobby' }, '', webJoinUrl(code));
+          setView(settings.instantJoin ? 'room' : 'lobby');
+        }}
+      />
+    );
+  }
+
   function afterAuth() {
     const pending = sessionStorage.getItem('lc-pending-join');
     if (pending) {
@@ -348,7 +405,7 @@ function AppRoutes() {
     goApp();
   }
 
-  if (!user && view !== 'lobby' && view !== 'room' && view !== 'missing' && view !== 'summary') {
+  if (!user && view !== 'lobby' && view !== 'room' && view !== 'missing' && view !== 'summary' && view !== 'join-gate') {
     if (isNativeApp() || view === 'login' || view === 'register') {
       return (
         <AuthScreen

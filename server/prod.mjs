@@ -14,6 +14,7 @@ const port = Number(process.env.PORT) || 4173;
 const SPA_ROUTES = new Set([
   '/',
   '/app',
+  '/join',
   '/login',
   '/register',
   '/signup',
@@ -94,6 +95,7 @@ function send404Page(res) {
 function isSpaPath(pathname) {
   if (SPA_ROUTES.has(pathname)) return true;
   if (pathname.startsWith('/app')) return true;
+  if (pathname.startsWith('/join')) return true;
   if (pathname.startsWith('/auth/')) return true;
   return false;
 }

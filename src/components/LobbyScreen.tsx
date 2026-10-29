@@ -619,8 +619,7 @@ function useConnectionStatus() {
     const refresh = () => {
       const parts: string[] = [];
       if (typeof conn.rtt === 'number' && conn.rtt > 0) parts.push(`${Math.round(conn.rtt)} ms`);
-      if (conn.effectiveType) parts.push(conn.effectiveType.replace('-', ' '));
-      else if (typeof conn.downlink === 'number') parts.push(`${conn.downlink} Mbps`);
+      if (typeof conn.downlink === 'number' && conn.downlink > 0) parts.push(`${conn.downlink} Mbps`);
       setDetail(parts.join(' · ') || 'Ready');
     };
     refresh();
