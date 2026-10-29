@@ -1130,6 +1130,7 @@ export function useRoom(options: Options) {
   );
   const sendBoardCursor = useCallback((x: number, y: number) => apiRef.current?.sendBoardCursor(x, y), []);
   const sendBoardMeta = useCallback((meta: BoardMeta) => apiRef.current?.sendBoardMeta(meta), []);
+  const sendBoardSync = useCallback((to?: string) => apiRef.current?.sendBoardSync(to), []);
   const dismissAsk = useCallback(() => setAsk(null), []);
 
   const createPoll = useCallback(
@@ -1209,6 +1210,7 @@ export function useRoom(options: Options) {
     sendBoardLive,
     sendBoardCursor,
     sendBoardMeta,
+    sendBoardSync,
     boardTick,
   };
 }

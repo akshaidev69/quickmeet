@@ -58,8 +58,12 @@ export function mergeObject(current: BoardObject | undefined, incoming: BoardObj
 }
 
 export function mergeMeta(current: BoardMeta, incoming: BoardMeta): BoardMeta {
-  if (incoming.clock > current.clock) return incoming;
-  return current;
+  if ((incoming.clock || 0) < (current.clock || 0)) return current;
+  return {
+    clock: Math.max(current.clock || 0, incoming.clock || 0),
+    hostOnly: incoming.hostOnly ?? current.hostOnly,
+    open: incoming.open ?? current.open,
+  };
 }
 
 export function applySnapshot(objects: Map<string, BoardObject>, snapshot: BoardSnapshot) {

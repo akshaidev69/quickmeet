@@ -459,6 +459,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     sendBoardLive,
     sendBoardCursor,
     sendBoardMeta,
+    sendBoardSync,
   } = useRoom({
     code,
     name: loadRoomDisplayName(code, settings.name),
@@ -844,12 +845,21 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     screenRef.current?.getTracks().forEach((track) => track.stop());
   }, [kickedBy]);
 
+  const remoteBoardWasOpen = useRef(false);
   useEffect(() => {
-    if (boardMeta.open && !boardOpen) {
-      setBoardOpen(true);
-      toast('Host started a whiteboard', { key: 'wb-open', oncePerSession: true });
+    if (boardMeta.open) {
+      setBoardOpen((open) => {
+        if (!open) toast('Whiteboard is open for everyone', { key: 'wb-open', oncePerSession: true });
+        return true;
+      });
+      remoteBoardWasOpen.current = true;
+      return;
     }
-  }, [boardMeta.open, boardOpen, toast]);
+    if (remoteBoardWasOpen.current) {
+      remoteBoardWasOpen.current = false;
+      setBoardOpen(false);
+    }
+  }, [boardMeta.open, toast]);
 
   useEffect(() => {
     if (canModerate && waiting.length > 0) {
@@ -1178,6 +1188,24 @@ async function toggleRecord() {
     saveFramePrefs(next);
   }
 
+  function openSharedBoard() {
+    setBoardOpen(true);
+    sendBoardMeta({ hostOnly: boardMeta.hostOnly, open: true, clock: Date.now() });
+    sendBoardSync();
+  }
+
+  function closeSharedBoard() {
+    setBoardOpen(false);
+    if (isHost || isCoHost) {
+      sendBoardMeta({ hostOnly: boardMeta.hostOnly, open: false, clock: Date.now() });
+    }
+  }
+
+  function toggleSharedBoard() {
+    if (boardOpen) closeSharedBoard();
+    else openSharedBoard();
+  }
+
   function popOut() {
     setPipNonce((value) => value + 1);
   }
@@ -1278,13 +1306,7 @@ async function toggleRecord() {
     toggleFullscreen,
     togglePanel,
     popOut,
-    toggleBoard: () => {
-      setBoardOpen((value) => {
-        const next = !value;
-        if (isHost || isCoHost) sendBoardMeta({ ...boardMeta, open: next, clock: Date.now() });
-        return next;
-      });
-    },
+    toggleBoard: toggleSharedBoard,
   });
   uiRef.current = {
     dialog,
@@ -1297,13 +1319,7 @@ async function toggleRecord() {
     toggleFullscreen,
     togglePanel,
     popOut,
-    toggleBoard: () => {
-      setBoardOpen((value) => {
-        const next = !value;
-        if (isHost || isCoHost) sendBoardMeta({ ...boardMeta, open: next, clock: Date.now() });
-        return next;
-      });
-    },
+    toggleBoard: toggleSharedBoard,
   };
 
   useEffect(() => {
@@ -1317,7 +1333,7 @@ async function toggleRecord() {
         if (typing) return;
         if (ui.dialog) setDialog(null);
         else if (ui.popover) setPopover(null);
-        else if (ui.boardOpen) setBoardOpen(false);
+        else if (ui.boardOpen) closeSharedBoard();
         else if (ui.panel) setPanel(null);
         return;
       }
@@ -1959,7 +1975,7 @@ async function toggleRecord() {
                 toast('Whiteboard saved to Catch-Up');
                 URL.revokeObjectURL(url);
               }}
-              onClose={() => setBoardOpen(false)}
+              onClose={closeSharedBoard}
             />
           ) : screens.length > 0 ? (
             <div className="present">
@@ -2387,7 +2403,7 @@ async function toggleRecord() {
             label="Whiteboard"
             shortcut="W"
             live={boardOpen}
-            onClick={() => setBoardOpen((value) => !value)}
+            onClick={toggleSharedBoard}
           >
             <IconBoard />
           </Cmd>
@@ -2434,7 +2450,7 @@ async function toggleRecord() {
                   hint="W"
                   onClick={() => {
                     setPopover(null);
-                    setBoardOpen(true);
+                    openSharedBoard();
                   }}
                 />
                 <MenuButton
@@ -2636,7 +2652,7 @@ async function toggleRecord() {
                 type="button"
                 onClick={() => {
                   setPopover(null);
-                  setBoardOpen(true);
+                  openSharedBoard();
                 }}
               >
                 <IconBoard />

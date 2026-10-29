@@ -939,7 +939,18 @@ export function Whiteboard({
           </button>
           {isHost && (
             <>
-              <button type="button" className={meta.hostOnly ? 'on' : undefined} onClick={() => onMeta({ hostOnly: !meta.hostOnly, clock: bumpClock() })}>
+              <button
+                type="button"
+                className={meta.hostOnly ? undefined : 'on'}
+                title={meta.hostOnly ? 'Only the host can draw' : 'Everyone can see and draw'}
+                onClick={() =>
+                  onMeta({
+                    hostOnly: !meta.hostOnly,
+                    open: true,
+                    clock: bumpClock(),
+                  })
+                }
+              >
                 {meta.hostOnly ? 'Host only' : 'Everyone'}
               </button>
               <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
