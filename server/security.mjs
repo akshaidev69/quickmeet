@@ -92,7 +92,15 @@ export function readBodyCapped(req, maxBytes = 1_000_000) {
 }
 
 export function iceServersFromEnv() {
-  const stun = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  const stun = [
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun.cloudflare.com:3478',
+      ],
+    },
+  ];
   const urls = String(process.env.TURN_URLS || process.env.VITE_TURN_URLS || '')
     .split(',')
     .map((item) => item.trim())
@@ -102,14 +110,7 @@ export function iceServersFromEnv() {
   if (urls.length && username && credential) {
     return [...stun, { urls, username, credential }];
   }
-  return [
-    ...stun,
-    {
-      urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turns:openrelay.metered.ca:443'],
-      username: 'openrelayproject',
-      credential: 'openrelayproject',
-    },
-  ];
+  return stun;
 }
 
 export const BUILD_VERSION =

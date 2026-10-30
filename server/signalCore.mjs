@@ -178,6 +178,18 @@ export function attachSignal(httpServer) {
     return count;
   }
 
+  function sendMembers(room, map) {
+    const peers = [];
+    for (const [id, member] of map) {
+      if (!member.admitted) continue;
+      peers.push({ id, name: member.name, hidden: Boolean(member.hidden) });
+    }
+    const payload = JSON.stringify({ kind: 'members', peers });
+    for (const member of map.values()) {
+      if (member.admitted && member.ws.readyState === 1) member.ws.send(payload);
+    }
+  }
+
   function sendWaiting(room, map) {
     const people = waitingList(map);
     const payload = JSON.stringify({ kind: 'waiting', people });
@@ -398,6 +410,7 @@ export function attachSignal(httpServer) {
             }),
           );
           sendMeta(room);
+          sendMembers(room, map);
           sendBoardToPeer(ws, roomBoards.get(room), 'room');
         } else {
           ws.send(JSON.stringify({ kind: 'gate', state: 'waiting', hostId }));
@@ -456,6 +469,7 @@ export function attachSignal(httpServer) {
             sendBoardToPeer(target.ws, roomBoards.get(room), 'room');
           }
           sendMeta(room);
+          sendMembers(room, map);
           return;
         }
         // deny / eject — cannot remove the sticky host; co-host cannot remove other co-hosts
@@ -604,10 +618,22 @@ export function attachSignal(httpServer) {
       } else if (type === 'board-meta') {
         recordEvent({ type: payload.meta?.open ? 'room.board_open' : 'room.board_close', room, name: self.name });
       }
-      const raw = JSON.stringify(msg);
+      let raw = JSON.stringify(msg);
+      if (raw.length > SIGNAL_MAX_BYTES && type === 'welcome') {
+        payload.chat = [];
+        payload.board = undefined;
+        msg.payload = payload;
+        raw = JSON.stringify(msg);
+      }
       if (raw.length > SIGNAL_MAX_BYTES) return;
-      for (const [id, member] of map) {
-        if (id !== peerId && member.admitted && member.ws.readyState === 1) member.ws.send(raw);
+      const target = String(payload.to || '');
+      if (target) {
+        const dest = map.get(target);
+        if (dest && dest.admitted && dest.ws.readyState === 1 && dest !== self) dest.ws.send(raw);
+      } else {
+        for (const [id, member] of map) {
+          if (id !== peerId && member.admitted && member.ws.readyState === 1) member.ws.send(raw);
+        }
       }
       if (room) touchRoomActivity(room);
     });

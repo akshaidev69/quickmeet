@@ -102,6 +102,7 @@ type Conn = {
   remoteCameraMid: string | null;
   remoteScreenMid: string | null;
   videos: VideoItem[];
+  lastRecover: number;
 };
 
 type RoomApi = {
@@ -276,6 +277,7 @@ export function useRoom(options: Options) {
     let socket: WebSocket | null = null;
     let reconnectTimer = 0;
     let captionTimer = 0;
+    let meshTimer = 0;
     const queue: string[] = [];
     const conns = new Map<string, Conn>();
     const timeouts = new Set<number>();
@@ -424,7 +426,12 @@ export function useRoom(options: Options) {
         existing.pc.ontrack = null;
         existing.pc.close();
       }
-      const pc = new RTCPeerConnection({ iceServers });
+      const pc = new RTCPeerConnection({
+        iceServers,
+        bundlePolicy: 'max-bundle',
+        rtcpMuxPolicy: 'require',
+        iceCandidatePoolSize: 4,
+      });
       const conn: Conn = {
         pc,
         polite: peerId > remoteId,
@@ -439,6 +446,7 @@ export function useRoom(options: Options) {
         remoteCameraMid: null,
         remoteScreenMid: null,
         videos: [],
+        lastRecover: Date.now(),
       };
       conns.set(remoteId, conn);
       if (!closed) setConnState((prev) => ({ ...prev, [remoteId]: 'new' }));
@@ -454,34 +462,14 @@ export function useRoom(options: Options) {
       pc.onconnectionstatechange = () => {
         if (!closed) setConnState((prev) => ({ ...prev, [remoteId]: pc.connectionState }));
       };
-      const dropPeer = () => {
-        conns.get(remoteId)?.pc.close();
-        conns.delete(remoteId);
-        mediaRef.current.delete(remoteId);
-        bump();
-        if (closed) return;
-        setPeers((prev) => {
-          if (!prev[remoteId]) return prev;
-          const next = { ...prev };
-          delete next[remoteId];
-          return next;
-        });
-        setConnState((prev) => {
-          if (!prev[remoteId]) return prev;
-          const next = { ...prev };
-          delete next[remoteId];
-          return next;
-        });
-      };
-
       pc.oniceconnectionstatechange = () => {
         if (closed) return;
         const ice = pc.iceConnectionState;
-        if (ice === 'closed') {
-          dropPeer();
+        if (ice === 'failed') {
+          window.setTimeout(() => recoverPeer(remoteId), 400);
           return;
         }
-        if (ice === 'disconnected' || ice === 'failed') {
+        if (ice === 'disconnected') {
           try {
             void pc.restartIce();
           } catch {
@@ -490,9 +478,9 @@ export function useRoom(options: Options) {
           window.setTimeout(() => {
             if (closed) return;
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-              dropPeer();
+              recoverPeer(remoteId);
             }
-          }, 15_000);
+          }, 8_000);
         }
       };
       pc.ontrack = (event) => {
@@ -521,28 +509,59 @@ export function useRoom(options: Options) {
         reclassify(remoteId, conn);
       };
       pc.onnegotiationneeded = () => {
-        if (conn.polite && !pc.currentRemoteDescription && pc.signalingState === 'stable') return;
         if (conn.makingOffer) return;
-        conn.makingOffer = true;
-        void sendDescription(conn, remoteId)
-          .catch((error) => console.warn('Negotiation failed', error))
-          .finally(() => {
-            conn.makingOffer = false;
-          });
+        if (conn.polite && !pc.currentRemoteDescription && pc.signalingState === 'stable') {
+          window.setTimeout(() => {
+            if (closed) return;
+            const live = conns.get(remoteId);
+            if (!live || live.pc !== pc) return;
+            if (live.pc.currentRemoteDescription || live.makingOffer) return;
+            if (live.pc.signalingState !== 'stable') return;
+            offerIfNeeded(remoteId, true);
+          }, 800);
+          return;
+        }
+        offerIfNeeded(remoteId);
       };
       wireLocal(conn);
       return conn;
     };
 
+    const offerIfNeeded = (remoteId: string, evenPolite = false) => {
+      const conn = conns.get(remoteId);
+      if (!conn || conn.makingOffer) return;
+      if (!evenPolite && conn.polite) return;
+      if (conn.pc.signalingState !== 'stable') return;
+      if (conn.pc.connectionState === 'connected') return;
+      conn.makingOffer = true;
+      void sendDescription(conn, remoteId)
+        .catch((error) => console.warn('Negotiation failed', error))
+        .finally(() => {
+          conn.makingOffer = false;
+        });
+    };
+
+    const recoverPeer = (remoteId: string) => {
+      if (closed || remoteId === peerId) return;
+      const existing = conns.get(remoteId);
+      if (existing && Date.now() - existing.lastRecover < 5000) return;
+      const conn = ensureConn(remoteId, true);
+      conn.lastRecover = Date.now();
+      send({ type: 'reset', from: peerId, to: remoteId });
+      offerIfNeeded(remoteId);
+    };
+
     const learn = (peer: PeerInfo) => {
       if (closed || peer.id === peerId) return;
       ensureConn(peer.id);
-      if (peer.hidden) return;
-      setPeers((prev) => {
-        const current = prev[peer.id];
-        if (current && samePeer(current, peer)) return prev;
-        return { ...prev, [peer.id]: peer };
-      });
+      if (!peer.hidden) {
+        setPeers((prev) => {
+          const current = prev[peer.id];
+          if (current && samePeer(current, peer)) return prev;
+          return { ...prev, [peer.id]: peer };
+        });
+      }
+      queueMicrotask(() => offerIfNeeded(peer.id));
     };
 
     const showCaption = (name: string, text: string) => {
@@ -617,7 +636,7 @@ export function useRoom(options: Options) {
             from: peerId,
             to: payload.from,
             peer: selfInfo(),
-            chat: historyRef.current.filter((item) => !item.system).slice(-50),
+            chat: historyRef.current.filter((item) => !item.system && !item.attachment).slice(-20),
             poll: pollRef.current,
             board: {
               objects: [...boardObjectsRef.current.values()],
@@ -698,6 +717,7 @@ export function useRoom(options: Options) {
       }
       if (payload.type === 'reset') {
         ensureConn(payload.from, true);
+        offerIfNeeded(payload.from);
         return;
       }
       if (payload.type === 'kick') {
@@ -827,9 +847,30 @@ export function useRoom(options: Options) {
       queue.length = 0;
       for (const [id, conn] of conns) {
         const state = conn.pc.connectionState;
-        if (state === 'failed' || state === 'disconnected' || state === 'closed') ensureConn(id, true);
+        if (state === 'failed' || state === 'disconnected' || state === 'closed') recoverPeer(id);
+        else offerIfNeeded(id);
       }
       send({ type: 'hello', from: peerId, peer: selfInfo() });
+      window.setTimeout(() => {
+        if (!closed && admittedRef.current) send({ type: 'hello', from: peerId, peer: selfInfo() });
+      }, 700);
+      if (!meshTimer) {
+        meshTimer = window.setInterval(() => {
+          if (closed || !admittedRef.current) return;
+          let pulse = false;
+          for (const [id, conn] of conns) {
+            const state = conn.pc.connectionState;
+            if (state === 'failed' || state === 'disconnected') {
+              recoverPeer(id);
+              pulse = true;
+            } else if (state !== 'connected' && state !== 'connecting') {
+              offerIfNeeded(id);
+              pulse = true;
+            }
+          }
+          if (pulse) send({ type: 'hello', from: peerId, peer: selfInfo() });
+        }, 5000);
+      }
     };
 
     const connect = () => {
@@ -860,6 +901,7 @@ export function useRoom(options: Options) {
           coHostIds?: string[];
           state?: string;
           people?: WaitingPerson[];
+          peers?: { id: string; name: string; hidden?: boolean }[];
           payload?: Signal;
         };
         try {
@@ -904,6 +946,22 @@ export function useRoom(options: Options) {
           if (!closed) {
             setHostId(message.hostId);
             setCoHostIds(Array.isArray(message.coHostIds) ? message.coHostIds : []);
+          }
+          return;
+        }
+        if (message.kind === 'members' && Array.isArray(message.peers) && admittedRef.current) {
+          for (const item of message.peers) {
+            if (!item?.id || item.id === peerId) continue;
+            learn({
+              id: String(item.id).slice(0, 80),
+              name: String(item.name || 'Guest').trim().slice(0, 40) || 'Guest',
+              micOn: true,
+              camOn: true,
+              hand: false,
+              sharing: false,
+              recording: false,
+              hidden: item.hidden || undefined,
+            });
           }
           return;
         }
@@ -1093,6 +1151,7 @@ export function useRoom(options: Options) {
       dead = true;
       window.clearTimeout(reconnectTimer);
       window.clearTimeout(captionTimer);
+      window.clearInterval(meshTimer);
       timeouts.forEach((timer) => window.clearTimeout(timer));
       for (const conn of conns.values()) conn.pc.close();
       socket?.close();
