@@ -109,6 +109,8 @@ export function HomeScreen({
   const [whenError, setWhenError] = useState('');
   const menuRef = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<HTMLButtonElement>(null);
+  const skipAvatarToggle = useRef(false);
+  const skipAvatarTimer = useRef(0);
   const [wifiUrls, setWifiUrls] = useState<string[]>([]);
   const [copiedUrl, setCopiedUrl] = useState('');
   const [cloud, setCloud] = useState<SavedMeeting[]>([]);
@@ -282,15 +284,32 @@ export function HomeScreen({
     setFollowUps(loadFollowUps());
   }, [cloud.length, recent.length]);
 
+  function armSkipAvatarToggle() {
+    skipAvatarToggle.current = true;
+    window.clearTimeout(skipAvatarTimer.current);
+    skipAvatarTimer.current = window.setTimeout(() => {
+      skipAvatarToggle.current = false;
+    }, 450);
+  }
+
+  function closeProfileMenu() {
+    setMenuOpen(false);
+    armSkipAvatarToggle();
+  }
+
+  useEffect(() => {
+    return () => window.clearTimeout(skipAvatarTimer.current);
+  }, []);
+
   useEffect(() => {
     if (!menuOpen) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') setMenuOpen(false);
+      if (event.key === 'Escape') closeProfileMenu();
     }
     function onPointer(event: PointerEvent) {
       const node = event.target as Node | null;
       if (menuRef.current?.contains(node) || avatarRef.current?.contains(node)) return;
-      setMenuOpen(false);
+      closeProfileMenu();
     }
     document.addEventListener('keydown', onKey);
     document.addEventListener('pointerdown', onPointer);
@@ -460,7 +479,11 @@ export function HomeScreen({
         type="button"
         className="dash-menu-backdrop"
         aria-label="Close profile menu"
-        onClick={() => setMenuOpen(false)}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          closeProfileMenu();
+        }}
       />
       <div className="dash-profile-menu" role="menu" ref={menuRef}>
         <div className="dash-profile-head">
@@ -581,7 +604,7 @@ export function HomeScreen({
           >
             Product
           </button>
-          <div className="dash-avatar-wrap">
+          <div className={`dash-avatar-wrap${menuOpen ? ' is-open' : ''}`}>
           <button
             ref={avatarRef}
             type="button"
@@ -589,7 +612,16 @@ export function HomeScreen({
             aria-label="Profile menu"
             aria-expanded={menuOpen}
             aria-haspopup="menu"
-            onClick={() => setMenuOpen((open) => !open)}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (skipAvatarToggle.current) return;
+              setMenuOpen((open) => {
+                if (open) armSkipAvatarToggle();
+                return !open;
+              });
+            }}
           >
             {user?.avatar ? (
               <img src={user.avatar} alt="" />

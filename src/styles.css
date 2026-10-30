@@ -6497,6 +6497,8 @@ html.is-native .summary-toasts {
 }
 .dash-icon-btn svg { width: 20px; height: 20px; }
 .dash-avatar {
+  position: relative;
+  z-index: 50;
   margin-left: 0;
   width: 40px;
   height: 40px;
@@ -6531,6 +6533,9 @@ html.is-native .summary-toasts {
 .dash-avatar-wrap {
   position: relative;
   z-index: 2;
+}
+.dash-avatar-wrap.is-open {
+  z-index: 91;
 }
 .dash-profile-menu {
   position: absolute;
