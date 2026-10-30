@@ -5,8 +5,10 @@ import { fetchMeetings, removeMeeting, updateProfile, type SavedMeeting } from '
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode, safeName, uid } from '../lib/code';
 import { formatDurationLabel, formatMeetingDayKey, formatMeetingWhen } from '../lib/formatTime';
 import { shareInviteUrl } from '../lib/invite';
+import { fetchRoomJoinState, isMeetingEndedLocal, markMeetingEnded } from '../lib/endedMeeting';
 import { isNativeApp } from '../lib/native';
 import type { RecentMeeting, ScheduledMeeting, Settings } from '../types';
+import { EndedMeetingDialog } from './EndedMeetingDialog';
 
 type Props = {
   settings: Settings;
@@ -119,6 +121,7 @@ export function HomeScreen({
   const [recentFilter, setRecentFilter] = useState<RecentFilter>('all');
   const [showAllRecent, setShowAllRecent] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>(() => loadFollowUps());
+  const [endedOpen, setEndedOpen] = useState(false);
 
   const upcomingRef = useRef<HTMLElement>(null);
   const recentRef = useRef<HTMLElement>(null);
@@ -356,16 +359,15 @@ export function HomeScreen({
       setJoinError('Enter a valid meeting code');
       return;
     }
-    if (role === 'guest') {
-      try {
-        const res = await fetch(`/api/rooms/${encodeURIComponent(formatted)}`);
-        if (res.status === 404) {
-          setJoinError('Meeting not found or has ended');
-          return;
-        }
-      } catch {
-        /* offline: still allow lobby attempt */
-      }
+    const roomState = isMeetingEndedLocal(formatted) ? 'ended' : await fetchRoomJoinState(formatted);
+    if (roomState === 'ended') {
+      markMeetingEnded(formatted);
+      setEndedOpen(true);
+      return;
+    }
+    if (role === 'guest' && roomState === 'missing') {
+      setJoinError('Meeting not found or has ended');
+      return;
     }
     setJoinError('');
     const leftover = schedule.filter((item) => formatCode(item.code) !== formatted);
@@ -1002,6 +1004,7 @@ export function HomeScreen({
           Recordings
         </button>
       </nav>
+      {endedOpen ? <EndedMeetingDialog onClose={() => setEndedOpen(false)} /> : null}
     </main>
   );
 }

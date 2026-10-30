@@ -29,6 +29,9 @@ const roomLastActivity = new Map();
 const roomLocked = new Map();
 /** @type {Map<string, boolean>} */
 const allowRejoin = new Map();
+/** Codes the host ended for everyone. Blocks rejoin until TTL. @type {Map<string, number>} */
+const endedMeetings = new Map();
+const ENDED_TTL_MS = 24 * 60 * 60 * 1000;
 /** @type {Map<string, { hostOnly: boolean, clock: number, open: boolean, view?: { left: number, top: number, width: number, height: number } }>} */
 const roomBoards = new Map();
 const BOARD_TEACH_TYPES = new Set(['board-op', 'board-live', 'board-view', 'board-sync']);
@@ -47,6 +50,7 @@ function startStaleMeetingSweep() {
   staleMeetingSweepStarted = true;
   setInterval(() => {
     const now = Date.now();
+    pruneEndedMeetings(now);
     for (const code of listOpenMeetingCodes()) {
       if (roomIsLive(code)) {
         touchRoomActivity(code);
@@ -63,9 +67,36 @@ function startStaleMeetingSweep() {
   }, 60_000);
 }
 
+function roomKey(code) {
+  return String(code || '').trim().toLowerCase();
+}
+
+function pruneEndedMeetings(now = Date.now()) {
+  for (const [code, at] of endedMeetings) {
+    if (now - at > ENDED_TTL_MS) endedMeetings.delete(code);
+  }
+}
+
+export function roomWasEnded(code) {
+  const key = roomKey(code);
+  if (!key) return false;
+  const at = endedMeetings.get(key);
+  if (!at) return false;
+  if (Date.now() - at > ENDED_TTL_MS) {
+    endedMeetings.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function markRoomEnded(room) {
+  const key = roomKey(room);
+  if (key) endedMeetings.set(key, Date.now());
+}
+
 /** True when a meeting code currently has at least one connected peer (usually the host). */
 export function roomIsLive(code) {
-  const key = String(code || '').trim().toLowerCase();
+  const key = roomKey(code);
   if (!key) return false;
   const map = rooms.get(key);
   return Boolean(map && map.size > 0 && hosts.get(key));
@@ -340,6 +371,10 @@ export function attachSignal(httpServer) {
         peerId = String(msg.from || '').slice(0, 80);
         const name = String(msg.name || 'Guest').trim().slice(0, 40) || 'Guest';
         if (!room || !peerId) return;
+        if (roomWasEnded(room)) {
+          ws.send(JSON.stringify({ kind: 'gate', state: 'denied', reason: 'ended' }));
+          return;
+        }
         touchRoomActivity(room);
         const map = roomMap(room);
         const previous = map.get(peerId);
@@ -592,6 +627,7 @@ export function attachSignal(httpServer) {
         for (const [id, member] of map) {
           if (id !== peerId && member.ws.readyState === 1) member.ws.send(notice);
         }
+        markRoomEnded(room);
         wipeRoom(room);
         return;
       }

@@ -7,7 +7,9 @@ import { LobbyScreen } from './components/LobbyScreen';
 import { MarketingPage } from './components/MarketingPage';
 import { LegalPage } from './components/LegalPage';
 import { MeetingScreen } from './components/MeetingScreen';
+import { EndedMeetingDialog } from './components/EndedMeetingDialog';
 import { MeetingSummary, type MeetingSummaryData } from './components/MeetingSummary';
+import { fetchRoomJoinState, isMeetingEndedLocal, markMeetingEnded } from './lib/endedMeeting';
 import { AdminPanel } from './components/AdminPanel';
 import { AuthProvider, useAuth } from './lib/auth';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode } from './lib/code';
@@ -122,6 +124,7 @@ function AppRoutes() {
   const [summary, setSummary] = useState<MeetingSummaryData | null>(null);
   const [boot, setBoot] = useState(true);
   const [docked, setDocked] = useState(false);
+  const [endedNotice, setEndedNotice] = useState(false);
   const [nativeLaunchReady, setNativeLaunchReady] = useState(!isNativeApp());
 
   useEffect(() => {
@@ -313,6 +316,11 @@ function AppRoutes() {
       return;
     }
     const formatted = formatCode(nextCode);
+    if (isMeetingEndedLocal(formatted) || (await fetchRoomJoinState(formatted)) === 'ended') {
+      markMeetingEnded(formatted);
+      setEndedNotice(true);
+      return;
+    }
     const host = role === 'host';
     if (host) sessionStorage.setItem(`lc-host:${formatted}`, '1');
     else sessionStorage.removeItem(`lc-host:${formatted}`);
@@ -338,6 +346,7 @@ function AppRoutes() {
   async function leave(nextSummary?: MeetingSummaryData) {
     setDocked(false);
     clearActiveRoom();
+    if (nextSummary?.endedForEveryone) markMeetingEnded(nextSummary.code);
     if (code && nextSummary?.endedForEveryone && user) {
       try {
         await saveMeeting({ code, endedAt: Date.now() });
@@ -547,6 +556,7 @@ function AppRoutes() {
           onRestore={() => setDocked(false)}
         />
       )}
+      {endedNotice ? <EndedMeetingDialog onClose={() => setEndedNotice(false)} /> : null}
     </>
   );
 }

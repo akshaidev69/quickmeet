@@ -208,6 +208,7 @@ export function useRoom(options: Options) {
   const [gate, setGate] = useState<GateState>(() =>
     options.silent ? 'connecting' : hadAdmitted(options.code, peerId) ? 'admitted' : 'connecting',
   );
+  const [denyReason, setDenyReason] = useState<string | null>(null);
   const [waiting, setWaiting] = useState<WaitingPerson[]>([]);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [connState, setConnState] = useState<Record<string, RTCPeerConnectionState | 'new'>>({});
@@ -900,6 +901,7 @@ export function useRoom(options: Options) {
           hostId?: string | null;
           coHostIds?: string[];
           state?: string;
+          reason?: string;
           people?: WaitingPerson[];
           peers?: { id: string; name: string; hidden?: boolean }[];
           payload?: Signal;
@@ -925,6 +927,7 @@ export function useRoom(options: Options) {
             dead = true;
             admittedRef.current = false;
             forgetAdmitted(options.code, peerId);
+            setDenyReason(String(message.reason || '') || null);
             setGate('denied');
             socket?.close();
             return;
@@ -1321,6 +1324,7 @@ export function useRoom(options: Options) {
     myId: peerId,
     status,
     gate,
+    denyReason,
     waiting,
     peers: remotes,
     chat,

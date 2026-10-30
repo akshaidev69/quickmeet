@@ -1,4 +1,4 @@
-import { attachSignal, roomIsLive } from './signalCore.mjs';
+import { attachSignal, roomIsLive, roomWasEnded } from './signalCore.mjs';
 import { adminMiddleware } from './adminApi.mjs';
 import { authMiddleware } from './authApi.mjs';
 
@@ -21,6 +21,10 @@ function apiExtras() {
 
     if (pathname.startsWith('/api/rooms/') && req.method === 'GET') {
       const code = pathname.slice('/api/rooms/'.length).toLowerCase();
+      if (roomWasEnded(code)) {
+        sendJson(res, 410, { error: 'That meeting is ended', ended: true });
+        return;
+      }
       if (!roomIsLive(code)) {
         sendJson(res, 404, { error: 'Meeting not found.' });
         return;

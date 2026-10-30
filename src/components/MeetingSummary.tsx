@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Logo } from './icons';
+import { EndedMeetingDialog } from './EndedMeetingDialog';
 import { useToasts } from '../hooks/useToasts';
 import { formatDurationLabel, formatMeetingWhen } from '../lib/formatTime';
 
@@ -134,6 +135,7 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
   const [copiedSummary, setCopiedSummary] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [endedOpen, setEndedOpen] = useState(false);
 
   const durationMs = data.endedAt - data.startedAt;
   const duration = formatDurationLabel(durationMs, data.endedAt);
@@ -224,7 +226,17 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
             </button>
           ) : null}
           {showRejoin ? (
-            <button type="button" className="primary" onClick={onRejoin}>
+            <button
+              type="button"
+              className="primary"
+              onClick={() => {
+                if (data.endedForEveryone) {
+                  setEndedOpen(true);
+                  return;
+                }
+                onRejoin?.();
+              }}
+            >
               Rejoin
             </button>
           ) : (
@@ -441,6 +453,7 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
           ))}
         </div>
       )}
+      {endedOpen ? <EndedMeetingDialog onClose={() => setEndedOpen(false)} /> : null}
     </main>
   );
 }

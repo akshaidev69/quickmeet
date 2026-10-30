@@ -21,7 +21,7 @@ export const defaultFramePrefs: FramePrefs = {
   centerMe: false,
   selfZoom: 1,
   selfPanX: 0.5,
-  selfPanY: 0.5,
+  selfPanY: 0.34,
   autoFloat: true,
 };
 
@@ -51,14 +51,15 @@ export function loadFramePrefs(): FramePrefs {
   }
 }
 
-/** Meetings fill the stage. Phones also keep Center me on so faces stay in frame. */
+/** Meetings fill the stage. Keep a bust crop (headroom to stomach), not a tight face zoom. */
 export function loadMeetingFramePrefs(): FramePrefs {
   const prefs = loadFramePrefs();
   return {
     ...prefs,
     defaultFit: 'cover',
     aspect: 'auto',
-    centerMe: isMobileShell() ? true : prefs.centerMe,
+    selfZoom: Math.min(prefs.selfZoom || 1, 1.18),
+    selfPanY: prefs.selfPanY === 0.5 ? 0.34 : prefs.selfPanY,
   };
 }
 

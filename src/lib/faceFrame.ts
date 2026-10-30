@@ -1,6 +1,9 @@
 type Box = { x: number; y: number; zoom: number };
 
-const ease = { x: 0.5, y: 0.5, zoom: 1.15 };
+const ease = { x: 0.5, y: 0.34, zoom: 1 };
+/** Face should take ~28% of the frame so headroom + chest/stomach stay in view. */
+const FACE_SHARE = 0.28;
+const MAX_BUST_ZOOM = 1.18;
 
 export async function detectFaceCenter(video: HTMLVideoElement): Promise<Box | null> {
   const Detector = (
@@ -17,8 +20,13 @@ export async function detectFaceCenter(video: HTMLVideoElement): Promise<Box | n
     const box = faces[0]?.boundingBox;
     if (!box) return null;
     const cx = (box.x + box.width / 2) / Math.max(1, video.videoWidth);
-    const cy = (box.y + box.height / 2) / Math.max(1, video.videoHeight);
-    const zoom = Math.min(2, Math.max(1 + 8 / 100, (video.videoHeight * 0.72) / Math.max(48, box.height)));
+    const faceMid = (box.y + box.height / 2) / Math.max(1, video.videoHeight);
+    // Keep the face in the upper third so the crop runs down to the stomach.
+    const cy = Math.min(0.4, Math.max(0.26, faceMid * 0.72 + 0.08));
+    const zoom = Math.min(
+      MAX_BUST_ZOOM,
+      Math.max(1, (video.videoHeight * FACE_SHARE) / Math.max(48, box.height)),
+    );
     return { x: cx, y: cy, zoom };
   } catch {
     return null;

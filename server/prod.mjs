@@ -2,7 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { attachSignal, roomIsLive } from './signalCore.mjs';
+import { attachSignal, roomIsLive, roomWasEnded } from './signalCore.mjs';
 import { handleAdminApi } from './adminApi.mjs';
 import { handleAuthApi } from './authApi.mjs';
 import { proxyFirebaseAuth } from './authHandlerProxy.mjs';
@@ -129,6 +129,10 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname.startsWith('/api/rooms/') && req.method === 'GET') {
       const code = pathname.slice('/api/rooms/'.length).toLowerCase();
+      if (roomWasEnded(code)) {
+        sendJson(res, req, 410, { error: 'That meeting is ended', ended: true });
+        return;
+      }
       if (!roomIsLive(code)) {
         sendJson(res, req, 404, { error: 'Meeting not found.' });
         return;

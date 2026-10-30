@@ -34,7 +34,9 @@ import { useOutsideDismiss } from './ui';
 import { useSelfLook } from '../hooks/useSelfLook';
 import { loadRoomDisplayName, safeName } from '../lib/code';
 import { shareInviteUrl } from '../lib/invite';
+import { EndedMeetingDialog } from './EndedMeetingDialog';
 import type { MeetingSummaryData } from './MeetingSummary';
+import { markMeetingEnded } from '../lib/endedMeeting';
 import { acquireMedia } from '../lib/media';
 import { getPreviewVideo, mountPreview } from '../lib/previewVideo';
 import { colorFor, initials } from '../lib/people';
@@ -371,7 +373,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const [boardOpen, setBoardOpen] = useState(false);
   const [frame, setFrame] = useState<FramePrefs>(loadMeetingFramePrefs);
   const [pipNonce, setPipNonce] = useState(0);
-  const [faceEase, setFaceEase] = useState({ x: 0.5, y: 0.5, zoom: 1 });
+  const [faceEase, setFaceEase] = useState({ x: 0.5, y: 0.34, zoom: 1 });
   const [boardEvents, setBoardEvents] = useState<CatchUpEvent[]>([]);
   const [noticeIndex, setNoticeIndex] = useState(0);
   const [networkQuality, setNetworkQuality] = useState<'Good' | 'Fair'>(() => readNetworkQuality());
@@ -427,12 +429,13 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const hostCastHandler = useRef<(cast: RecordCast, active: boolean) => void>(() => undefined);
   const hostIdRef = useRef<string | null>(null);
   const chatRef = useRef<{ name: string; text: string; ts: number; system?: boolean }[]>([]);
-  const finishLeaveRef = useRef<(() => void) | null>(null);
+  const finishLeaveRef = useRef<((endedForEveryone?: boolean) => void) | null>(null);
 
   const {
     myId,
     status,
     gate,
+    denyReason,
     waiting,
     peers,
     chat,
@@ -491,7 +494,7 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     },
     onHostCast: (cast, active) => hostCastHandler.current(cast, active),
     onMeetingEnded: () => {
-      finishLeaveRef.current?.();
+      finishLeaveRef.current?.(true);
     },
   });
 
@@ -1314,6 +1317,7 @@ async function toggleRecord() {
   }, [boardEvents, chat, hand, joinedAt, myId, name, peers, sharing]);
 
   const finishLeave = useCallback((endedForEveryone = false) => {
+    if (endedForEveryone) markMeetingEnded(code);
     leaveMeetingCleanup(streamRef, screenRef);
     onLeave(
       buildLeaveSummary({
@@ -1520,7 +1524,7 @@ async function toggleRecord() {
         portrait={blurFill}
         selfZoom={tile.you ? (frame.centerMe ? faceEase.zoom : frame.selfZoom) : 1}
         selfPanX={tile.you ? (frame.centerMe ? faceEase.x : frame.selfPanX) : 0.5}
-        selfPanY={tile.you ? (frame.centerMe ? faceEase.y : frame.selfPanY) : 0.5}
+        selfPanY={tile.you ? (frame.centerMe ? faceEase.y : frame.selfPanY) : 0.34}
         onFit={(next) => patchFrame({ fit: { ...frame.fit, [tile.key]: next } })}
         onSelfCrop={
           tile.you
@@ -1631,6 +1635,13 @@ async function toggleRecord() {
   }
 
   if (gate === 'denied') {
+    if (denyReason === 'ended') {
+      return (
+        <main className="home kicked">
+          <EndedMeetingDialog onClose={() => onLeave()} />
+        </main>
+      );
+    }
     return (
       <main className="home kicked">
         <section className="card narrow">
@@ -3082,7 +3093,7 @@ function Tile({
   portrait = false,
   selfZoom = 1,
   selfPanX = 0.5,
-  selfPanY = 0.5,
+  selfPanY = 0.34,
   onFit,
   onSelfCrop,
   onPin,

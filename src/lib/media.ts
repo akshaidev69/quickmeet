@@ -29,11 +29,11 @@ function audioConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConst
 }
 
 function preferredCamSize() {
-  if (typeof window === 'undefined') return { width: 1280, height: 720 };
+  if (typeof window === 'undefined') return { width: 960, height: 720, aspect: 4 / 3 };
   const portrait = window.matchMedia('(orientation: portrait)').matches;
   const narrow = window.innerWidth <= 900;
-  if (narrow && portrait) return { width: 720, height: 1280 };
-  return { width: 1280, height: 720 };
+  if (narrow && portrait) return { width: 720, height: 1280, aspect: 9 / 16 };
+  return { width: 960, height: 720, aspect: 4 / 3 };
 }
 
 function videoConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConstraints | boolean {
@@ -44,10 +44,20 @@ function videoConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConst
   return {
     width: { ideal: size.width },
     height: { ideal: size.height },
+    aspectRatio: { ideal: size.aspect },
     frameRate: { ideal: 30, max: 30 },
     ...(mobile && !opts.camId ? { facingMode: 'user' } : {}),
     ...(exact && opts.camId ? { deviceId: { exact: opts.camId } } : {}),
   };
+}
+
+function widenCamera(stream: MediaStream) {
+  for (const track of stream.getVideoTracks()) {
+    const caps = track.getCapabilities?.() as { zoom?: { min?: number } } | undefined;
+    const minZoom = caps?.zoom?.min;
+    if (typeof minZoom !== 'number' || !Number.isFinite(minZoom)) continue;
+    void track.applyConstraints({ advanced: [{ zoom: minZoom }] }).catch(() => undefined);
+  }
 }
 
 function applyEnabled(stream: MediaStream, opts: AcquireOptions) {
@@ -111,6 +121,7 @@ export async function acquireMedia(opts: AcquireOptions): Promise<AcquireResult>
     try {
       const stream = await tryGet(attempt.audio, attempt.video);
       applyEnabled(stream, opts);
+      widenCamera(stream);
       const video = stream.getVideoTracks().length > 0;
       const audio = stream.getAudioTracks().length > 0;
       let warning: string | undefined;

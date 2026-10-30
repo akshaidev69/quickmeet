@@ -979,7 +979,7 @@ html {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center;
+  object-position: 50% 34%;
   background: transparent;
 }
 .preview video.mirror, .tile video.mirror, .fx-canvas.mirror { transform: scaleX(-1); }
@@ -1260,9 +1260,9 @@ video.fx-hidden { opacity: 0; }
 .tile video.fit-cover { object-fit: cover; }
 .local-slot video, .local-slot .fx-canvas {
   object-fit: var(--tile-fit, cover);
-  object-position: var(--tile-pos, 50% 50%);
+  object-position: var(--tile-pos, 50% 34%);
   transform: scale(var(--self-zoom, 1));
-  transform-origin: var(--tile-pos, 50% 50%);
+  transform-origin: var(--tile-pos, 50% 34%);
 }
 .tile[data-fit="cover"] video,
 .tile[data-fit="cover"] .fx-canvas,
@@ -1948,6 +1948,19 @@ video.fx-hidden { opacity: 0; }
   background: color-mix(in srgb, #d93025 12%, transparent);
   color: #ffb4ab;
 }
+.ended-meeting-back {
+  z-index: 120;
+}
+.ended-meeting-dialog {
+  gap: 18px;
+}
+.ended-meeting-actions {
+  grid-template-columns: 1fr;
+}
+.ended-meeting-actions .primary {
+  width: 100%;
+  min-height: 44px;
+}
 .room-meet .leave-dialog {
   background: #1c2622;
   border-color: #33443a;
@@ -2372,6 +2385,9 @@ video.fx-hidden { opacity: 0; }
 .meet-preview video,
 .preview-slot video {
   object-fit: cover;
+  object-position: 50% 34%;
+}
+.tile[data-kind="screen"] video {
   object-position: center;
 }
 .waiting-preview .preview-slot {
@@ -4483,6 +4499,10 @@ html.is-native .room-meet .tile video,
 html.is-native .room-meet .tile .fx-canvas,
 html.is-native .room-meet .local-slot video {
   object-fit: cover;
+  object-position: 50% 34%;
+}
+html.is-mobile .room-meet .tile[data-kind="screen"] video,
+html.is-native .room-meet .tile[data-kind="screen"] video {
   object-position: center;
 }
 html.is-mobile .room-meet .tile[data-fit="cover"] video,
