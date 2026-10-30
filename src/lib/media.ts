@@ -56,7 +56,9 @@ function widenCamera(stream: MediaStream) {
     const caps = track.getCapabilities?.() as { zoom?: { min?: number } } | undefined;
     const minZoom = caps?.zoom?.min;
     if (typeof minZoom !== 'number' || !Number.isFinite(minZoom)) continue;
-    void track.applyConstraints({ advanced: [{ zoom: minZoom }] }).catch(() => undefined);
+    void track
+      .applyConstraints({ advanced: [{ zoom: minZoom } as MediaTrackConstraintSet] })
+      .catch(() => undefined);
   }
 }
 
