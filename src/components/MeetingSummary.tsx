@@ -211,7 +211,7 @@ export function MeetingSummary({ data, onDashboard, onNewMeeting, onRejoin }: Pr
     <main className="summary-page">
       <header className="summary-topbar">
         <div className="summary-brand">
-          <Logo size={32} />
+          <Logo size={28} />
           <span>LetsConnect</span>
         </div>
         <div className="summary-topbar-actions">

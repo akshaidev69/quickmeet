@@ -16,6 +16,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 
 import androidx.core.app.ActivityCompat;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 
 import com.capacitorjs.plugins.app.AppPlugin;
 import com.capacitorjs.plugins.browser.BrowserPlugin;
@@ -59,6 +62,12 @@ public class MainActivity extends BridgeActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             webView.setImportantForAutofill(View.IMPORTANT_FOR_AUTOFILL_NO);
         }
+
+        applySafeAreaInsets(webView);
+        ViewCompat.setOnApplyWindowInsetsListener(webView, (v, insets) -> {
+            applySafeAreaFromInsets(webView, insets);
+            return insets;
+        });
 
         webView.setWebChromeClient(new BridgeWebChromeClient(this.bridge) {
             @Override
@@ -238,6 +247,32 @@ public class MainActivity extends BridgeActivity {
         } catch (Exception ignored) {
             /* PiP params not available yet */
         }
+    }
+
+    private void applySafeAreaInsets(WebView webView) {
+        WindowInsetsCompat insets = ViewCompat.getRootWindowInsets(webView);
+        if (insets != null) applySafeAreaFromInsets(webView, insets);
+        webView.post(() -> {
+            WindowInsetsCompat later = ViewCompat.getRootWindowInsets(webView);
+            if (later != null) applySafeAreaFromInsets(webView, later);
+        });
+    }
+
+    private void applySafeAreaFromInsets(WebView webView, WindowInsetsCompat insets) {
+        Insets bars = insets.getInsets(
+            WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout()
+        );
+        float density = getResources().getDisplayMetrics().density;
+        int top = Math.max(0, Math.round(bars.top / density));
+        int bottom = Math.max(0, Math.round(bars.bottom / density));
+        int left = Math.max(0, Math.round(bars.left / density));
+        int right = Math.max(0, Math.round(bars.right / density));
+        String js =
+            "document.documentElement.style.setProperty('--sat','" + top + "px');" +
+            "document.documentElement.style.setProperty('--sab','" + bottom + "px');" +
+            "document.documentElement.style.setProperty('--sal','" + left + "px');" +
+            "document.documentElement.style.setProperty('--sar','" + right + "px');";
+        webView.evaluateJavascript(js, null);
     }
 
     private void requestMeetingPermissions() {

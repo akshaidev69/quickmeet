@@ -16,7 +16,15 @@ function markShell() {
   root.dataset.shell = native ? 'native' : narrow ? 'mobile' : 'desktop';
 }
 
+function applyNativeSafeAreaFallback() {
+  if (!isNativeApp()) return;
+  const root = document.documentElement;
+  if (!root.style.getPropertyValue('--sat')) root.style.setProperty('--sat', '28px');
+  if (!root.style.getPropertyValue('--sab')) root.style.setProperty('--sab', '12px');
+}
+
 markShell();
+applyNativeSafeAreaFallback();
 window.matchMedia('(max-width: 820px)').addEventListener('change', markShell);
 window.matchMedia('(pointer: coarse)').addEventListener('change', markShell);
 

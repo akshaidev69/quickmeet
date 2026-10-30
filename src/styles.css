@@ -5353,8 +5353,10 @@ html.is-native .luma-page {
   display: none !important;
 }
 html.is-native .home-hub {
-  /* Safe area handled by .hub-wrap ? avoid double top inset */
   padding-top: 0;
+}
+html.is-native .app-account-menu {
+  top: calc(56px + max(28px, env(safe-area-inset-top, 0px), var(--sat, 0px)));
 }
 html.is-native .room-meet .stage {
   background: #0e1411;
@@ -5565,11 +5567,16 @@ html.is-native .room-meet .tile canvas.fx-canvas {
 }
 .summary-page {
   min-height: 100dvh;
-  padding: 20px 16px 40px;
+  box-sizing: border-box;
+  padding:
+    max(16px, env(safe-area-inset-top, 0px))
+    16px
+    max(24px, env(safe-area-inset-bottom, 0px));
   max-width: 1120px;
   margin: 0 auto;
   display: grid;
   gap: 20px;
+  align-content: start;
   background:
     radial-gradient(circle at 8% 0%, color-mix(in srgb, #22a06b 14%, transparent), transparent 42%),
     radial-gradient(circle at 92% 8%, color-mix(in srgb, #22a06b 10%, transparent), transparent 36%),
@@ -5941,6 +5948,122 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   .summary-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+html.is-mobile .summary-page,
+html.is-native .summary-page {
+  width: 100%;
+  max-width: none;
+  min-height: 100dvh;
+  min-height: 100svh;
+  gap: 12px;
+  padding:
+    max(12px, calc(env(safe-area-inset-top, 0px) + 8px))
+    max(12px, env(safe-area-inset-left, 0px))
+    calc(84px + max(10px, env(safe-area-inset-bottom, 0px), var(--sab, 0px)))
+    max(12px, env(safe-area-inset-right, 0px));
+}
+html.is-native .summary-page {
+  /* Punch-hole / status bar: Android WebView often reports 0 for env(safe-area). */
+  padding-top: calc(max(28px, env(safe-area-inset-top, 0px), var(--sat, 0px)) + 8px);
+  padding-bottom: calc(84px + max(10px, env(safe-area-inset-bottom, 0px), var(--sab, 0px)));
+  padding-left: max(12px, env(safe-area-inset-left, 0px), var(--sal, 0px));
+  padding-right: max(12px, env(safe-area-inset-right, 0px), var(--sar, 0px));
+}
+html.is-mobile .summary-topbar,
+html.is-native .summary-topbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+html.is-mobile .summary-brand,
+html.is-native .summary-brand {
+  font-size: 16px;
+}
+html.is-mobile .summary-topbar-actions,
+html.is-native .summary-topbar-actions {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  padding: 10px 12px max(12px, env(safe-area-inset-bottom, 0px), var(--sab, 0px));
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(16px);
+  border-top: 1px solid var(--line);
+  box-sizing: border-box;
+}
+html.is-mobile .summary-topbar-actions .primary,
+html.is-native .summary-topbar-actions .primary {
+  grid-column: 1 / -1;
+}
+html.is-mobile .summary-topbar-actions button,
+html.is-native .summary-topbar-actions button {
+  min-height: 44px;
+  width: 100%;
+  margin: 0;
+}
+html.is-mobile .summary-hero,
+html.is-native .summary-hero {
+  padding: 16px 14px 14px;
+  border-radius: 16px;
+  box-shadow: 0 10px 24px color-mix(in srgb, #22a06b 22%, transparent);
+}
+html.is-mobile .summary-hero h1,
+html.is-native .summary-hero h1 {
+  margin: 4px 0 4px;
+  font-size: 1.35rem;
+}
+html.is-mobile .summary-hero-privacy,
+html.is-native .summary-hero-privacy {
+  margin: 0 0 12px;
+  font-size: 12px;
+}
+html.is-mobile .summary-stats,
+html.is-native .summary-stats {
+  gap: 8px;
+}
+html.is-mobile .summary-stats div,
+html.is-native .summary-stats div {
+  padding: 10px 12px;
+  border-radius: 12px;
+}
+html.is-mobile .summary-stats dd,
+html.is-native .summary-stats dd {
+  margin-top: 4px;
+  font-size: 1.15rem;
+}
+html.is-mobile .summary-columns,
+html.is-native .summary-columns {
+  gap: 10px;
+}
+html.is-mobile .summary-panel,
+html.is-native .summary-panel {
+  min-height: 0;
+  padding: 14px;
+  border-radius: 16px;
+}
+html.is-mobile .summary-panel-stack,
+html.is-native .summary-panel-stack {
+  gap: 16px;
+}
+html.is-mobile .summary-footer-cards,
+html.is-native .summary-footer-cards {
+  gap: 8px;
+}
+html.is-mobile .summary-footer-card,
+html.is-native .summary-footer-card {
+  padding: 12px 14px;
+  border-radius: 14px;
+}
+html.is-mobile .summary-toasts,
+html.is-native .summary-toasts {
+  left: 12px;
+  right: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom, 0px));
 }
 .app-home-toolbar {
   display: grid;
@@ -7043,8 +7166,26 @@ html.is-native .room-meet .tile canvas.fx-canvas {
   height: 22px;
 }
 
+html.is-native .hub-v2,
 .hub-v2-native {
-  padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  padding-top: calc(max(28px, env(safe-area-inset-top, 0px), var(--sat, 0px)));
+  padding-bottom: calc(88px + max(8px, env(safe-area-inset-bottom, 0px), var(--sab, 0px)));
+  padding-left: max(14px, env(safe-area-inset-left, 0px), var(--sal, 0px));
+  padding-right: max(14px, env(safe-area-inset-right, 0px), var(--sar, 0px));
+}
+html.is-native .hub-v2 .dash-top,
+.hub-v2-native .dash-top {
+  padding-top: 6px;
+  padding-bottom: 8px;
+}
+html.is-native .hub-v2 .dash-tabbar,
+.hub-v2-native .dash-tabbar {
+  padding-bottom: calc(8px + max(8px, env(safe-area-inset-bottom, 0px), var(--sab, 0px)));
+}
+html.is-native .app-home {
+  padding-top: calc(max(28px, env(safe-area-inset-top, 0px), var(--sat, 0px)) + 6px);
+  padding-left: max(14px, env(safe-area-inset-left, 0px), var(--sal, 0px));
+  padding-right: max(14px, env(safe-area-inset-right, 0px), var(--sar, 0px));
 }
 
 /* Responsive visibility */
