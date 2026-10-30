@@ -15,7 +15,7 @@ export type FramePrefs = {
 const KEY = 'LetsConnect.frame';
 
 export const defaultFramePrefs: FramePrefs = {
-  defaultFit: 'contain',
+  defaultFit: 'cover',
   fit: {},
   aspect: 'auto',
   centerMe: false,
@@ -51,11 +51,39 @@ export function loadFramePrefs(): FramePrefs {
   }
 }
 
-/** Phone meetings always start 9:16 and Center me on. Desktop keeps saved prefs. */
+/** Meetings fill the stage. Phones also keep Center me on so faces stay in frame. */
 export function loadMeetingFramePrefs(): FramePrefs {
   const prefs = loadFramePrefs();
-  if (!isMobileShell()) return prefs;
-  return { ...prefs, aspect: '9:16', centerMe: true };
+  return {
+    ...prefs,
+    defaultFit: 'cover',
+    aspect: 'auto',
+    centerMe: isMobileShell() ? true : prefs.centerMe,
+  };
+}
+
+/** Pick columns/rows that fill the stage on phone, tablet, or desktop. */
+export function stageGrid(count: number, width: number, height: number) {
+  const n = Math.max(1, count);
+  if (n === 1) return { cols: 1, rows: 1, spanLast: false };
+  const w = Math.max(120, width || 1280);
+  const h = Math.max(120, height || 720);
+  const gap = 8;
+  let best = { cols: 1, rows: n, score: Number.NEGATIVE_INFINITY };
+  for (let cols = 1; cols <= n; cols += 1) {
+    const rows = Math.ceil(n / cols);
+    const tileW = (w - gap * (cols - 1)) / cols;
+    const tileH = (h - gap * (rows - 1)) / rows;
+    if (tileW < 72 || tileH < 72) continue;
+    const ratio = tileW / Math.max(1, tileH);
+    const shape = ratio < 0.38 || ratio > 3.2 ? 0.35 : ratio < 0.52 || ratio > 2.05 ? 0.58 : 1;
+    const leftover = cols * rows - n;
+    const pack = leftover === 0 ? 1.1 : leftover === 1 && cols > 1 ? 1.08 : 0.86;
+    const score = tileW * tileH * shape * pack;
+    if (score > best.score) best = { cols, rows, score };
+  }
+  const leftover = best.cols * best.rows - n;
+  return { cols: best.cols, rows: best.rows, spanLast: leftover === 1 && best.cols > 1 };
 }
 
 export function saveFramePrefs(prefs: FramePrefs) {

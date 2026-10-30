@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { attachSignal, roomIsLive } from './signalCore.mjs';
+import { handleAdminApi } from './adminApi.mjs';
 import { handleAuthApi } from './authApi.mjs';
 import { proxyFirebaseAuth } from './authHandlerProxy.mjs';
 import { BUILD_VERSION, securityHeaders } from './security.mjs';
@@ -21,6 +22,7 @@ const SPA_ROUTES = new Set([
   '/privacy',
   '/terms',
   '/auth/google-bridge',
+  '/admin',
 ]);
 
 function contentType(filePath) {
@@ -101,11 +103,13 @@ function isSpaPath(pathname) {
   if (pathname.startsWith('/app')) return true;
   if (pathname.startsWith('/join')) return true;
   if (pathname.startsWith('/auth/')) return true;
+  if (pathname.startsWith('/admin')) return true;
   return false;
 }
 
 const server = http.createServer(async (req, res) => {
   try {
+    if (await handleAdminApi(req, res)) return;
     if (await handleAuthApi(req, res)) return;
 
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -140,7 +144,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/robots.txt') {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=3600' });
-      res.end('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /app\nSitemap: /sitemap.xml\n');
+      res.end('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /app\nDisallow: /admin\nSitemap: /sitemap.xml\n');
       return;
     }
 

@@ -38,13 +38,15 @@ type Options = {
   recording: boolean;
   /** Creator / claimed host — skip guest knock when possible */
   claimHost?: boolean;
+  /** Admin silent watch — receive media, never appear in the call */
+  silent?: boolean;
   onForceMute?: (kind: 'mic' | 'cam') => void;
   onHostCast?: (cast: RecordCastSignal, active: boolean) => void;
   onMeetingEnded?: () => void;
 };
 
-function stablePeerId(code: string) {
-  const key = `lc-peer:${code}`;
+function stablePeerId(code: string, silent = false) {
+  const key = silent ? `lc-observer:${code}` : `lc-peer:${code}`;
   try {
     const existing = sessionStorage.getItem(key);
     if (existing) return existing;
@@ -186,7 +188,8 @@ function samePeer(a: PeerInfo, b: PeerInfo) {
     a.camOn === b.camOn &&
     a.hand === b.hand &&
     a.sharing === b.sharing &&
-    a.recording === b.recording
+    a.recording === b.recording &&
+    Boolean(a.hidden) === Boolean(b.hidden)
   );
 }
 
@@ -195,11 +198,15 @@ function systemNote(text: string): ChatMessage {
 }
 
 export function useRoom(options: Options) {
-  const peerId = useRef(stablePeerId(options.code)).current;
+  const peerId = useRef(stablePeerId(options.code, Boolean(options.silent))).current;
   const claimHostRef = useRef(Boolean(options.claimHost));
+  const silentRef = useRef(Boolean(options.silent));
   claimHostRef.current = Boolean(options.claimHost);
+  silentRef.current = Boolean(options.silent);
   const [status, setStatus] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
-  const [gate, setGate] = useState<GateState>(() => (hadAdmitted(options.code, peerId) ? 'admitted' : 'connecting'));
+  const [gate, setGate] = useState<GateState>(() =>
+    options.silent ? 'connecting' : hadAdmitted(options.code, peerId) ? 'admitted' : 'connecting',
+  );
   const [waiting, setWaiting] = useState<WaitingPerson[]>([]);
   const [peers, setPeers] = useState<Record<string, PeerInfo>>({});
   const [connState, setConnState] = useState<Record<string, RTCPeerConnectionState | 'new'>>({});
@@ -235,7 +242,7 @@ export function useRoom(options: Options) {
   const onForceMuteRef = useRef(options.onForceMute);
   const onHostCastRef = useRef(options.onHostCast);
   const onMeetingEndedRef = useRef(options.onMeetingEnded);
-  const admittedRef = useRef(hadAdmitted(options.code, peerId));
+  const admittedRef = useRef(!options.silent && hadAdmitted(options.code, peerId));
   const apiRef = useRef<RoomApi | null>(null);
   const mediaRef = useRef(new Map<string, Bucket>());
 
@@ -277,11 +284,12 @@ export function useRoom(options: Options) {
     const selfInfo = (): PeerInfo => ({
       id: peerId,
       name: safeName(nameRef.current),
-      micOn: micRef.current,
-      camOn: camRef.current,
-      hand: handRef.current,
-      sharing: shareRef.current,
-      recording: recRef.current,
+      micOn: silentRef.current ? false : micRef.current,
+      camOn: silentRef.current ? false : camRef.current,
+      hand: silentRef.current ? false : handRef.current,
+      sharing: silentRef.current ? false : shareRef.current,
+      recording: silentRef.current ? false : recRef.current,
+      hidden: silentRef.current || undefined,
     });
 
     const send = (payload: Signal) => {
@@ -374,6 +382,12 @@ export function useRoom(options: Options) {
     };
 
     const wireLocal = (conn: Conn) => {
+      if (silentRef.current) {
+        conn.audioSender = conn.pc.addTransceiver('audio', { direction: 'recvonly' }).sender;
+        conn.videoSender = conn.pc.addTransceiver('video', { direction: 'recvonly' }).sender;
+        conn.pc.addTransceiver('video', { direction: 'recvonly' });
+        return;
+      }
       const stream = streamRef.current;
       const audio = stream?.getAudioTracks()[0] ?? null;
       const video = stream?.getVideoTracks()[0] ?? null;
@@ -522,12 +536,13 @@ export function useRoom(options: Options) {
 
     const learn = (peer: PeerInfo) => {
       if (closed || peer.id === peerId) return;
+      ensureConn(peer.id);
+      if (peer.hidden) return;
       setPeers((prev) => {
         const current = prev[peer.id];
         if (current && samePeer(current, peer)) return prev;
         return { ...prev, [peer.id]: peer };
       });
-      ensureConn(peer.id);
     };
 
     const showCaption = (name: string, text: string) => {
@@ -833,7 +848,8 @@ export function useRoom(options: Options) {
             room: code,
             from: peerId,
             name: safeName(nameRef.current),
-            claimHost: claimHostRef.current,
+            claimHost: silentRef.current ? false : claimHostRef.current,
+            observer: silentRef.current || undefined,
           }),
         );
       };
@@ -873,7 +889,7 @@ export function useRoom(options: Options) {
           }
           if (message.state === 'admitted') {
             admittedRef.current = true;
-            rememberAdmitted(options.code, peerId);
+            if (!silentRef.current) rememberAdmitted(options.code, peerId);
             setGate('admitted');
             enterMeeting();
             return;
@@ -912,7 +928,7 @@ export function useRoom(options: Options) {
 
     apiRef.current = {
       publish: () => {
-        if (admittedRef.current) send({ type: 'state', from: peerId, peer: selfInfo() });
+        if (admittedRef.current && !silentRef.current) send({ type: 'state', from: peerId, peer: selfInfo() });
       },
       setStream: (next) => {
         streamRef.current = next;
@@ -1111,6 +1127,7 @@ export function useRoom(options: Options) {
     for (const id of Object.keys(peers)) {
       const now = peers[id];
       const was = prev[id];
+      if (now.hidden) continue;
       if (!was) notes.push(systemNote(`${now.name} joined`));
       else {
         if (was.name !== now.name) {
@@ -1141,6 +1158,7 @@ export function useRoom(options: Options) {
           window.clearTimeout(pending.timer);
           delete pendingNames.current[id];
         }
+        if (prev[id].hidden) continue;
         notes.push(systemNote(`${prev[id].name} left`));
       }
     }
@@ -1150,6 +1168,7 @@ export function useRoom(options: Options) {
 
   const remotes = useMemo<RemotePeer[]>(() => {
     return Object.values(peers)
+      .filter((peer) => !peer.hidden)
       .sort((a, b) => a.id.localeCompare(b.id))
       .map((peer) => {
         const media = mediaRef.current.get(peer.id);

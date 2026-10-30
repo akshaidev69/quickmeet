@@ -52,7 +52,7 @@ import { isNativeApp } from '../lib/native';
 import { pauseAutoFloat } from '../lib/pipGate';
 import { onNativePipAction, onNativePipMode, setPipControls } from '../lib/nativeMeeting';
 import { detectFaceCenter, faceObjectPosition, tickFaceEase } from '../lib/faceFrame';
-import { aspectCss, loadMeetingFramePrefs, saveFramePrefs, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
+import { loadMeetingFramePrefs, saveFramePrefs, stageGrid, trackIsPortrait, type FramePrefs, type LayoutAspect, type TileFit } from '../lib/framePrefs';
 import { buildCatchUp, harvestPromises, type CatchUpEvent } from '../lib/meetingIntel';
 import { beep } from '../lib/sound';
 import { useCaptions } from '../hooks/useCaptions';
@@ -178,23 +178,10 @@ function readNetworkQuality(): 'Good' | 'Fair' {
   return 'Good';
 }
 
-function gridClass(count: number) {
-  if (count <= 1) return 'grid c1';
-  if (count === 2) return 'grid c2';
-  if (count === 3) return 'grid three';
-  if (count === 4) return 'grid c2 rows2';
-  if (count <= 9) return 'grid cols3';
-  if (count <= 16) return 'grid cols4';
-  if (count <= 25) return 'grid cols5';
-  return 'grid cols6';
-}
-
-function tileFitFor(frame: FramePrefs, key: string, portrait: boolean, compact: boolean, kind?: TileModel['kind']): TileFit {
+function tileFitFor(frame: FramePrefs, key: string, kind?: TileModel['kind']): TileFit {
   if (frame.fit[key]) return frame.fit[key];
   if (kind === 'screen') return 'contain';
-  if (compact) return 'cover';
-  if (portrait) return 'contain';
-  return frame.defaultFit;
+  return frame.defaultFit || 'cover';
 }
 
 function inviteLink(code: string) {
@@ -400,6 +387,27 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
   const screenRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const gridObs = useRef<ResizeObserver | null>(null);
+  const [stageBox, setStageBox] = useState({ w: 1280, h: 720 });
+  const setGridNode = useCallback((node: HTMLDivElement | null) => {
+    gridObs.current?.disconnect();
+    gridObs.current = null;
+    if (!node) return;
+    const apply = (width: number, height: number) => {
+      const w = Math.round(width);
+      const h = Math.round(height);
+      if (w < 40 || h < 40) return;
+      setStageBox((prev) => (prev.w === w && prev.h === h ? prev : { w, h }));
+    };
+    const ro = new ResizeObserver((entries) => {
+      const box = entries[0]?.contentRect;
+      if (box) apply(box.width, box.height);
+    });
+    ro.observe(node);
+    gridObs.current = ro;
+    const rect = node.getBoundingClientRect();
+    apply(rect.width, rect.height);
+  }, []);
   const roomRef = useRef<HTMLElement>(null);
   const chatInput = useRef<HTMLInputElement>(null);
   const chatFileInput = useRef<HTMLInputElement>(null);
@@ -593,6 +601,11 @@ export function MeetingScreen({ code, asHost = false, settings, initialStream, o
     sync();
     mq.addEventListener('change', sync);
     return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => () => {
+    gridObs.current?.disconnect();
+    gridObs.current = null;
   }, []);
 
   useEffect(() => {
@@ -1488,7 +1501,7 @@ async function toggleRecord() {
     const compact =
       viewportMobile || document.documentElement.classList.contains('is-mobile') || document.documentElement.classList.contains('is-native');
     const trackPortrait = trackIsPortrait(tile.stream?.getVideoTracks()[0]);
-    const fit = tileFitFor(frame, tile.key, trackPortrait, compact, tile.kind);
+    const fit = tileFitFor(frame, tile.key, tile.kind);
     const blurFill = trackPortrait && fit === 'contain' && !compact;
     return (
       <Tile
@@ -1657,7 +1670,8 @@ async function toggleRecord() {
     cameras.find((tile) => !tile.you) ||
     cameras[0];
   const otherTiles = cameras.filter((tile) => tile.key !== mainTile.key);
-  const mobileFocus = viewportMobile && screens.length === 0 && cameras.length >= 2;
+  const mobileFocus = viewportMobile && screens.length === 0 && cameras.length === 2 && layout === 'speaker';
+  const peopleGrid = stageGrid(cameras.length, stageBox.w, stageBox.h);
   const mobileMainTile =
     cameras.find((tile) => tile.speaking && !tile.you) ||
     cameras.find((tile) => !tile.you) ||
@@ -2012,31 +2026,18 @@ async function toggleRecord() {
               <div className="strip">{cameras.map((tile) => renderTile(tile))}</div>
             </div>
           ) : mobileFocus ? (
-            <div
-              className="meet-mobile-stage"
-              data-aspect={frame.aspect}
-              style={{
-                ['--tile-aspect' as string]: aspectCss(frame.aspect) || '9 / 16',
-              }}
-            >
+            <div className="meet-mobile-stage" data-aspect="auto">
               <div className="meet-mobile-main">{renderTile(mobileMainTile, 'main')}</div>
               {mobilePipTile ? <div className="meet-mobile-pip">{renderTile(mobilePipTile, 'pip')}</div> : null}
             </div>
           ) : layout === 'grid' || cameras.length < 2 ? (
             <div
-              className={gridClass(cameras.length)}
-              data-aspect={frame.aspect}
+              ref={setGridNode}
+              className={peopleGrid.spanLast ? 'grid fill span-last' : 'grid fill'}
+              data-aspect="auto"
               style={{
-                ['--tile-aspect' as string]: aspectCss(frame.aspect) || '16 / 9',
-                ['--tile-ar' as string]: String(
-                  frame.aspect === '4:3'
-                    ? 4 / 3
-                    : frame.aspect === '1:1'
-                      ? 1
-                      : frame.aspect === '9:16'
-                        ? 9 / 16
-                        : 16 / 9,
-                ),
+                gridTemplateColumns: `repeat(${peopleGrid.cols}, minmax(0, 1fr))`,
+                gridTemplateRows: `repeat(${peopleGrid.rows}, minmax(0, 1fr))`,
               }}
             >
               {cameras.map((tile) => renderTile(tile))}
@@ -3077,7 +3078,7 @@ function Tile({
   casted,
   slow,
   trouble,
-  fit = 'contain',
+  fit = 'cover',
   portrait = false,
   selfZoom = 1,
   selfPanX = 0.5,

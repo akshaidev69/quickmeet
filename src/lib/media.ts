@@ -28,11 +28,24 @@ function audioConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConst
   };
 }
 
+function preferredCamSize() {
+  if (typeof window === 'undefined') return { width: 1280, height: 720 };
+  const portrait = window.matchMedia('(orientation: portrait)').matches;
+  const narrow = window.innerWidth <= 900;
+  if (narrow && portrait) return { width: 720, height: 1280 };
+  return { width: 1280, height: 720 };
+}
+
 function videoConstraints(opts: AcquireOptions, exact: boolean): MediaTrackConstraints | boolean {
+  const size = preferredCamSize();
+  const mobile =
+    typeof window !== 'undefined' &&
+    (window.innerWidth <= 900 || /Android|iPhone|iPad/i.test(navigator.userAgent));
   return {
-    width: { ideal: 960 },
-    height: { ideal: 540 },
+    width: { ideal: size.width },
+    height: { ideal: size.height },
     frameRate: { ideal: 30, max: 30 },
+    ...(mobile && !opts.camId ? { facingMode: 'user' } : {}),
     ...(exact && opts.camId ? { deviceId: { exact: opts.camId } } : {}),
   };
 }

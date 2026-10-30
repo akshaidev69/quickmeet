@@ -1,4 +1,5 @@
 import { attachSignal, roomIsLive } from './signalCore.mjs';
+import { adminMiddleware } from './adminApi.mjs';
 import { authMiddleware } from './authApi.mjs';
 
 function sendJson(res, status, data) {
@@ -31,7 +32,7 @@ function apiExtras() {
     if (pathname === '/robots.txt') {
       res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       res.statusCode = 200;
-      res.end('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /app\n');
+      res.end('User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /app\nDisallow: /admin\n');
       return;
     }
 
@@ -51,6 +52,7 @@ export function signalPlugin() {
     name: 'letsconnect-signal',
     configureServer(server) {
       server.middlewares.use(apiExtras());
+      server.middlewares.use(adminMiddleware());
       server.middlewares.use(authMiddleware());
       const boot = () => {
         if (server.httpServer) attachSignal(server.httpServer);
@@ -60,6 +62,7 @@ export function signalPlugin() {
     },
     configurePreviewServer(server) {
       server.middlewares.use(apiExtras());
+      server.middlewares.use(adminMiddleware());
       server.middlewares.use(authMiddleware());
       const boot = () => {
         if (server.httpServer) attachSignal(server.httpServer);

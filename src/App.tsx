@@ -8,6 +8,7 @@ import { MarketingPage } from './components/MarketingPage';
 import { LegalPage } from './components/LegalPage';
 import { MeetingScreen } from './components/MeetingScreen';
 import { MeetingSummary, type MeetingSummaryData } from './components/MeetingSummary';
+import { AdminPanel } from './components/AdminPanel';
 import { AuthProvider, useAuth } from './lib/auth';
 import { formatCode, isFullCode, isValidMeetingCode, meetingCode } from './lib/code';
 import { loadCustomBackground } from './lib/customBg';
@@ -38,11 +39,12 @@ import {
 // clearActiveRoom used on auth success so register never resumes a stale room
 import type { RecentMeeting, ScheduledMeeting, Settings } from './types';
 
-type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge' | 'privacy' | 'terms' | 'join-gate';
+type Phase = 'market' | 'login' | 'register' | 'home' | 'lobby' | 'room' | 'summary' | 'missing' | 'google-bridge' | 'privacy' | 'terms' | 'join-gate' | 'admin';
 
 function pathPhase(): Phase {
   const path = location.pathname.replace(/\/+$/, '') || '/';
   const room = roomFromLocation();
+  if (path === '/admin' || path.startsWith('/admin/')) return 'admin';
   if (path === '/auth/google-bridge') return 'google-bridge';
   if (path === '/privacy') return 'privacy';
   if (path === '/terms') return 'terms';
@@ -61,7 +63,7 @@ function pathPhase(): Phase {
 function routeFromUrl(_instant: boolean, authed: boolean): { view: Phase; code: string; asHost?: boolean } {
   const room = roomFromLocation();
   const base = pathPhase();
-  if (base === 'privacy' || base === 'terms' || base === 'google-bridge') return { view: base, code: '' };
+  if (base === 'privacy' || base === 'terms' || base === 'google-bridge' || base === 'admin') return { view: base, code: '' };
   if (base === 'join-gate' && room) return { view: 'join-gate', code: room };
   if (room) {
     const code = formatCode(room);
@@ -205,7 +207,7 @@ function AppRoutes() {
     if (isNativeApp() && !user) {
       const joinCode = roomFromLocation() || next.code;
       if (joinCode) rememberPendingJoin(joinCode);
-      if (path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms' && path !== '/join' && !path.startsWith('/join/')) {
+      if (path !== '/login' && path !== '/register' && path !== '/auth/google-bridge' && path !== '/privacy' && path !== '/terms' && path !== '/admin' && path !== '/join' && !path.startsWith('/join/')) {
         navigate(joinCode ? `/login?room=${encodeURIComponent(joinCode)}` : '/login', true);
         setView('login');
       }
@@ -220,6 +222,8 @@ function AppRoutes() {
           ? 'Log in · LetsConnect'
           : view === 'register'
             ? 'Sign up · LetsConnect'
+            : view === 'admin'
+              ? 'Admin · LetsConnect'
             : view === 'missing'
               ? 'Meeting not found · LetsConnect'
               : view === 'join-gate'
@@ -371,6 +375,10 @@ function AppRoutes() {
 
   if (view === 'google-bridge' || location.pathname.replace(/\/+$/, '') === '/auth/google-bridge') {
     return <GoogleAuthBridge />;
+  }
+
+  if (view === 'admin' || location.pathname.replace(/\/+$/, '') === '/admin' || location.pathname.startsWith('/admin/')) {
+    return <AdminPanel />;
   }
 
   if (loading || boot) {

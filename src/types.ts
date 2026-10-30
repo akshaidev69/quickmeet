@@ -6,6 +6,7 @@ export type PeerInfo = {
   hand: boolean;
   sharing: boolean;
   recording: boolean;
+  hidden?: boolean;
 };
 
 export type ChatAttachment = {

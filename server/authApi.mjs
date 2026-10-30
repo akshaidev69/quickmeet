@@ -15,6 +15,7 @@ import {
   upsertMeeting,
   upsertUserProfile,
   addWaitlistEmail,
+  touchUserLogin,
 } from './db.mjs';
 import {
   ensurePg,
@@ -29,10 +30,12 @@ import {
   pgUpdateUserProfile,
   pgUpsertMeeting,
   pgUpsertUserProfile,
+  pgTouchUserLogin,
 } from './pgStore.mjs';
 import { hashPassword, verifyPassword } from './passwords.mjs';
 import { firebaseSendPasswordReset, firebaseSignIn, firebaseSignUp } from './firebasePasswords.mjs';
-import { iceServersFromEnv, rateLimit, readBodyCapped, securityHeaders, BUILD_VERSION } from './security.mjs';
+import { clientKey, iceServersFromEnv, rateLimit, readBodyCapped, securityHeaders, BUILD_VERSION } from './security.mjs';
+import { recordEvent } from './adminStore.mjs';
 import {
   COOKIE,
   clearSessionCookie,
@@ -100,6 +103,24 @@ async function dbLinkGoogle(userId, googleId, avatar) {
     await pgLinkGoogle(userId, googleId, avatar);
   }
   return linkGoogle(userId, googleId, avatar);
+}
+
+async function dbTouchLogin(userId, method) {
+  if (await usePg()) {
+    try {
+      await pgTouchUserLogin(userId, method);
+    } catch {
+      /* JSON mirror below */
+    }
+  }
+  return touchUserLogin(userId, method);
+}
+
+function assertActive(user) {
+  if (user?.disabled) {
+    throw Object.assign(new Error('This account has been disabled.'), { status: 403 });
+  }
+  return user;
 }
 
 async function dbUpdateProfile(userId, patch) {
@@ -326,6 +347,7 @@ async function currentUser(req) {
       name: claims.name || claims.email.split('@')[0],
     });
   }
+  if (user?.disabled) return null;
   return user ? { user, token } : null;
 }
 
@@ -391,6 +413,12 @@ export async function handleAuthApi(req, res) {
           /* JSON already stored */
         }
       }
+      recordEvent({
+        type: 'waitlist.join',
+        email: normalized,
+        detail: result.already ? 'already' : null,
+        ip: clientKey(req),
+      });
       sendJson(res, 200, { ok: true, ...(result.already ? { already: true } : {}) }, {}, req);
       return true;
     }
@@ -418,7 +446,16 @@ export async function handleAuthApi(req, res) {
       }
       const profile = await verifyFirebaseIdToken(idToken);
       const row = await upsertGoogleProfile(profile);
+      assertActive(row);
+      await dbTouchLogin(row.id, 'google');
       const cookie = await issueSession(res, row.id);
+      recordEvent({
+        type: 'auth.google',
+        userId: row.id,
+        name: row.name,
+        email: row.email,
+        ip: clientKey(req),
+      });
       sendJson(res, 200, { user: publicUser(row) }, { 'Set-Cookie': cookie });
       return true;
     }
@@ -452,7 +489,17 @@ export async function handleAuthApi(req, res) {
       handoffs.delete(code);
       const profile = await verifyFirebaseIdToken(entry.idToken);
       const row = await upsertGoogleProfile(profile);
+      assertActive(row);
+      await dbTouchLogin(row.id, 'google');
       const cookie = await issueSession(res, row.id);
+      recordEvent({
+        type: 'auth.google',
+        userId: row.id,
+        name: row.name,
+        email: row.email,
+        detail: 'handoff',
+        ip: clientKey(req),
+      });
       sendJson(res, 200, { user: publicUser(row) }, { 'Set-Cookie': cookie });
       return true;
     }
@@ -477,6 +524,7 @@ export async function handleAuthApi(req, res) {
       }
       try {
         await firebaseSendPasswordReset(email);
+        recordEvent({ type: 'auth.forgot', email, ip: clientKey(req) });
       } catch (err) {
         sendJson(res, err.status || 400, { error: err.message || 'Could not send a reset email.' }, {}, req);
         return true;
@@ -530,7 +578,15 @@ export async function handleAuthApi(req, res) {
         sendJson(res, status, { error: err.message || 'Could not create account.', field: status === 409 ? 'email' : undefined });
         return true;
       }
+      await dbTouchLogin(row.id, 'password');
       const cookie = await issueSession(res, row);
+      recordEvent({
+        type: 'auth.register',
+        userId: row.id,
+        name: row.name,
+        email: row.email,
+        ip: clientKey(req),
+      });
       sendJson(res, 201, { user: publicUser(row) }, { 'Set-Cookie': cookie });
       return true;
     }
@@ -572,6 +628,7 @@ export async function handleAuthApi(req, res) {
       }
 
       if (!ok || !row) {
+        recordEvent({ type: 'auth.login_fail', email: checked.email, ip: clientKey(req) });
         sendJson(res, 401, { error: 'Email or password is incorrect.' });
         return true;
       }
@@ -580,12 +637,31 @@ export async function handleAuthApi(req, res) {
         const passwordHash = await hashPassword(checked.password);
         row = await dbUpsertProfile({ id: row.id, email: row.email, name: row.name, passwordHash });
       }
+      assertActive(row);
+      await dbTouchLogin(row.id, 'password');
       const cookie = await issueSession(res, row);
+      recordEvent({
+        type: 'auth.login',
+        userId: row.id,
+        name: row.name,
+        email: row.email,
+        ip: clientKey(req),
+      });
       sendJson(res, 200, { user: publicUser(row) }, { 'Set-Cookie': cookie });
       return true;
     }
 
     if (url.pathname === '/api/auth/logout' && req.method === 'POST') {
+      const session = await currentUser(req);
+      if (session) {
+        recordEvent({
+          type: 'auth.logout',
+          userId: session.user.id,
+          name: session.user.name,
+          email: session.user.email,
+          ip: clientKey(req),
+        });
+      }
       sendJson(res, 200, { ok: true }, { 'Set-Cookie': clearCookie() });
       return true;
     }
@@ -681,7 +757,21 @@ export async function handleAuthApi(req, res) {
           else throw err;
         }
       }
+      if (row?.disabled) {
+        res.writeHead(302, { Location: '/login?error=disabled' });
+        res.end();
+        return true;
+      }
+      await dbTouchLogin(row.id, 'google');
       const cookie = await issueSession(res, row.id);
+      recordEvent({
+        type: 'auth.google',
+        userId: row.id,
+        name: row.name,
+        email: row.email,
+        detail: 'oauth',
+        ip: clientKey(req),
+      });
       res.writeHead(302, {
         Location: '/app',
         'Set-Cookie': [cookie, 'lc_oauth_state=; Path=/; Max-Age=0'],
@@ -711,6 +801,14 @@ export async function handleAuthApi(req, res) {
       const meeting = (await usePg())
         ? await pgUpsertMeeting(session.user.id, body)
         : upsertMeeting(session.user.id, body);
+      recordEvent({
+        type: body.endedAt ? 'meeting.end' : 'meeting.save',
+        room: body.code,
+        userId: session.user.id,
+        name: session.user.name,
+        email: session.user.email,
+        ip: clientKey(req),
+      });
       sendJson(res, 200, { meeting }, {}, req);
       return true;
     }

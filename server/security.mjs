@@ -4,9 +4,10 @@
 const AUTH_WINDOW_MS = 60_000;
 const AUTH_MAX = 20;
 const JOIN_MAX = 40;
+const ADMIN_MAX = 8;
 const buckets = new Map();
 
-function clientKey(req) {
+export function clientKey(req) {
   const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
   return forwarded || req.socket?.remoteAddress || 'unknown';
 }
@@ -49,7 +50,7 @@ export function securityHeaders(req, extra = {}) {
 }
 
 export function rateLimit(req, kind = 'auth') {
-  const max = kind === 'join' ? JOIN_MAX : AUTH_MAX;
+  const max = kind === 'admin' ? ADMIN_MAX : kind === 'join' ? JOIN_MAX : AUTH_MAX;
   const key = `${kind}:${clientKey(req)}`;
   const now = Date.now();
   let bucket = buckets.get(key);

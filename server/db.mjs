@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = process.env.LETSCONNECT_DATA || path.join(__dirname, '..', 'data');
 const jsonPath = path.join(dataDir, 'letsconnect.json');
 
-/** @typedef {{ id: string, email: string, name: string, passwordHash: string | null, googleId: string | null, avatar: string | null, plan: string, createdAt: number }} User */
+/** @typedef {{ id: string, email: string, name: string, passwordHash: string | null, googleId: string | null, avatar: string | null, plan: string, createdAt: number, lastLoginAt?: number | null, lastLoginMethod?: string | null, disabled?: boolean }} User */
 /** @typedef {{ id: string, userId: string, code: string, title: string, startedAt: number, endedAt: number | null, durationMs: number, attendees: number, notes: string }} Meeting */
 /** @typedef {{ id: string, userId: string, tokenHash: string, expiresAt: number, createdAt: number }} Session */
 
@@ -72,6 +72,9 @@ export function createUser({ email, name, passwordHash = null, googleId = null, 
     avatar,
     plan: 'free',
     createdAt: Date.now(),
+    lastLoginAt: null,
+    lastLoginMethod: null,
+    disabled: false,
   };
   mutate((store) => {
     store.users.push(user);
@@ -153,6 +156,68 @@ export function publicUser(user) {
     hasGoogle: Boolean(user.googleId),
     createdAt: user.createdAt,
   };
+}
+
+function isGmailAddress(email) {
+  return /@(gmail|googlemail)\.com$/i.test(String(email || ''));
+}
+
+/** Full account record for the operator console (never includes password hashes). */
+export function adminUser(user) {
+  if (!user) return null;
+  const email = String(user.email || '').toLowerCase();
+  return {
+    ...publicUser(user),
+    googleId: user.googleId || null,
+    gmail: isGmailAddress(email),
+    lastLoginAt: user.lastLoginAt || null,
+    lastLoginMethod: user.lastLoginMethod || null,
+    disabled: Boolean(user.disabled),
+  };
+}
+
+export function touchUserLogin(userId, method) {
+  if (!userId) return null;
+  mutate((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) return store;
+    user.lastLoginAt = Date.now();
+    user.lastLoginMethod = String(method || 'password').slice(0, 24);
+    return store;
+  });
+  return findUserById(userId);
+}
+
+export function adminUpdateUser(userId, patch) {
+  mutate((store) => {
+    const user = store.users.find((item) => item.id === userId);
+    if (!user) return store;
+    if (patch.name != null) {
+      const name = String(patch.name || '').trim().slice(0, 60);
+      if (name) user.name = name;
+    }
+    if (patch.plan != null) {
+      const plan = String(patch.plan || 'free').trim().slice(0, 24) || 'free';
+      user.plan = plan;
+    }
+    if (typeof patch.disabled === 'boolean') user.disabled = patch.disabled;
+    return store;
+  });
+  const row = findUserById(userId);
+  if (!row) throw Object.assign(new Error('Account not found.'), { status: 404 });
+  return adminUser(row);
+}
+
+export function adminDeleteUser(userId) {
+  const existing = findUserById(userId);
+  if (!existing) throw Object.assign(new Error('Account not found.'), { status: 404 });
+  mutate((store) => {
+    store.users = store.users.filter((item) => item.id !== userId);
+    store.meetings = store.meetings.filter((item) => item.userId !== userId);
+    store.sessions = store.sessions.filter((item) => item.userId !== userId);
+    return store;
+  });
+  return { ok: true, id: userId, email: existing.email };
 }
 
 export function createSession(userId, tokenHash, ttlMs = 1000 * 60 * 60 * 24 * 30) {
@@ -244,6 +309,30 @@ export function deleteMeeting(userId, meetingId) {
 
 export function getUserRow(userId) {
   return findUserById(userId);
+}
+
+export function listAllUsers() {
+  return cache.users
+    .slice()
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .map((user) => adminUser(user));
+}
+
+export function listAllMeetings() {
+  return cache.meetings.slice().sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+}
+
+export function listWaitlist() {
+  const emails = cache.waitlist?.emails || [];
+  return emails.map((email) => ({ email, createdAt: null }));
+}
+
+export function countUsers() {
+  return cache.users.length;
+}
+
+export function countMeetings() {
+  return cache.meetings.length;
 }
 
 /** @returns {{ ok: boolean, already: boolean }} */

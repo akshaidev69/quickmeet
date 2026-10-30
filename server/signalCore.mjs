@@ -4,11 +4,18 @@ import {
   endOpenMeetingsByCodeIfOlderThan,
   listOpenMeetingCodes,
 } from './db.mjs';
+import { recordEvent } from './adminStore.mjs';
+import { adminFromCookieHeader } from './adminSession.mjs';
+
+const HIDDEN_RELAY_TYPES = new Set(['hello', 'description', 'ice']);
+
+/** @type {Map<string, boolean>} */
+const shareFlags = new Map();
 
 /** @type {import('http').Server | null} */
 let attachedServer = null;
 
-/** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean, leaveTimer?: ReturnType<typeof setTimeout> | null }>>} */
+/** @type {Map<string, Map<string, { ws: import('ws').WebSocket, name: string, admitted: boolean, hidden?: boolean, leaveTimer?: ReturnType<typeof setTimeout> | null }>>} */
 const rooms = new Map();
 /** @type {Map<string, string>} */
 const hosts = new Map();
@@ -64,6 +71,46 @@ export function roomIsLive(code) {
   return Boolean(map && map.size > 0 && hosts.get(key));
 }
 
+export function listLiveRooms() {
+  const out = [];
+  for (const [code, map] of rooms) {
+    const hostId = hosts.get(code) || null;
+    const people = [];
+    let participants = 0;
+    let waiting = 0;
+    let observers = 0;
+    for (const [id, member] of map) {
+      if (member.hidden) {
+        observers += 1;
+        continue;
+      }
+      const person = {
+        id,
+        name: member.name,
+        admitted: Boolean(member.admitted),
+        host: id === hostId,
+        cohost: Boolean(coHosts.get(code)?.has(id)),
+      };
+      people.push(person);
+      if (person.admitted) participants += 1;
+      else waiting += 1;
+    }
+    out.push({
+      code,
+      hostId,
+      locked: Boolean(roomLocked.get(code)),
+      allowRejoin: allowRejoin.get(code) !== false,
+      boardOpen: Boolean(roomBoards.get(code)?.open),
+      lastActivity: roomLastActivity.get(code) || 0,
+      participants,
+      waiting,
+      observers,
+      people,
+    });
+  }
+  return out.sort((a, b) => (b.lastActivity || 0) - (a.lastActivity || 0));
+}
+
 /**
  * Shared WebSocket signaling: sticky host, co-hosts, waiting-room admit gate, peer relay.
  * @param {import('http').Server} httpServer
@@ -111,13 +158,24 @@ export function attachSignal(httpServer) {
   function waitingList(map) {
     const people = [];
     for (const [id, member] of map) {
-      if (!member.admitted) people.push({ id, name: member.name });
+      if (!member.admitted && !member.hidden) people.push({ id, name: member.name });
     }
     return people;
   }
 
   function coHostIds(room, map) {
-    return [...cohostFor(room)].filter((id) => map.has(id) && map.get(id)?.admitted);
+    return [...cohostFor(room)].filter((id) => {
+      const member = map.get(id);
+      return member?.admitted && !member.hidden;
+    });
+  }
+
+  function visibleCount(map) {
+    let count = 0;
+    for (const member of map.values()) {
+      if (!member.hidden) count += 1;
+    }
+    return count;
   }
 
   function sendWaiting(room, map) {
@@ -126,7 +184,7 @@ export function attachSignal(httpServer) {
     const hostId = stickyHost(room);
     for (const [id, member] of map) {
       if (!member.admitted || member.ws.readyState !== 1) continue;
-      if (id === hostId || cohostFor(room).has(id)) member.ws.send(payload);
+      if (id === hostId || cohostFor(room).has(id) || member.hidden) member.ws.send(payload);
     }
   }
 
@@ -140,6 +198,9 @@ export function attachSignal(httpServer) {
     roomLocked.delete(room);
     allowRejoin.delete(room);
     roomBoards.delete(room);
+    for (const key of [...shareFlags.keys()]) {
+      if (key.startsWith(`${room}:`)) shareFlags.delete(key);
+    }
   }
 
   function mergeBoardMeta(current, incoming) {
@@ -186,12 +247,12 @@ export function attachSignal(httpServer) {
 
   function cleanupEmpty(room) {
     const map = rooms.get(room);
-    if (!map || map.size === 0) wipeRoom(room);
+    if (!map || visibleCount(map) === 0) wipeRoom(room);
   }
 
   function sendMeta(room) {
     const map = rooms.get(room);
-    if (!map || map.size === 0) {
+    if (!map || visibleCount(map) === 0) {
       wipeRoom(room);
       return;
     }
@@ -209,14 +270,14 @@ export function attachSignal(httpServer) {
     cohostFor(room).delete(leavingId);
     let next = null;
     for (const [id, member] of map) {
-      if (member.admitted && cohostFor(room).has(id)) {
+      if (member.admitted && !member.hidden && cohostFor(room).has(id)) {
         next = id;
         break;
       }
     }
     if (!next) {
       for (const [id, member] of map) {
-        if (member.admitted) {
+        if (member.admitted && !member.hidden) {
           next = id;
           break;
         }
@@ -224,6 +285,7 @@ export function attachSignal(httpServer) {
     }
     if (!next) {
       for (const [id, member] of map) {
+        if (member.hidden) continue;
         next = id;
         member.admitted = true;
         memoryFor(room).add(id);
@@ -248,9 +310,10 @@ export function attachSignal(httpServer) {
     });
   });
 
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
     let room = '';
     let peerId = '';
+    const admin = adminFromCookieHeader(req?.headers?.cookie || '');
 
     ws.on('message', (buf) => {
       let msg;
@@ -282,33 +345,48 @@ export function attachSignal(httpServer) {
 
         const memory = memoryFor(room);
         const claimHost = Boolean(msg.claimHost);
-        const previouslyAdmitted = memory.has(peerId) || Boolean(previous?.admitted);
+        const hidden = Boolean(msg.observer) && Boolean(admin);
+        if (msg.observer && !admin) {
+          ws.send(JSON.stringify({ kind: 'gate', state: 'denied', reason: 'admin' }));
+          return;
+        }
+        const previouslyAdmitted = !hidden && (memory.has(peerId) || Boolean(previous?.admitted));
         let hostId = stickyHost(room);
         const hostMember = hostId ? map.get(hostId) : null;
         const hostAlive =
           Boolean(hostId) &&
           hostId !== peerId &&
           Boolean(hostMember) &&
+          !hostMember.hidden &&
           hostMember.ws !== ws &&
           hostMember.ws.readyState === 1;
 
-        if (!hostId) {
-          hostId = peerId;
-          hosts.set(room, peerId);
-        } else if (!hostAlive && (claimHost || peerId === hostId)) {
-          hostId = peerId;
-          hosts.set(room, peerId);
+        if (!hidden) {
+          if (!hostId) {
+            hostId = peerId;
+            hosts.set(room, peerId);
+          } else if (!hostAlive && (claimHost || peerId === hostId)) {
+            hostId = peerId;
+            hosts.set(room, peerId);
+          }
         }
 
-        if (roomLocked.get(room) && peerId !== hostId && !previouslyAdmitted) {
+        if (!hidden && roomLocked.get(room) && peerId !== hostId && !previouslyAdmitted) {
+          recordEvent({ type: 'room.denied', room, name, detail: 'locked' });
           ws.send(JSON.stringify({ kind: 'gate', state: 'denied', hostId, reason: 'locked' }));
           return;
         }
 
-        const admitted = peerId === hostId || previouslyAdmitted;
-        const member = { ws, name, admitted, leaveTimer: null };
+        const admitted = hidden || peerId === hostId || previouslyAdmitted;
+        const member = { ws, name, admitted, hidden, leaveTimer: null };
         map.set(peerId, member);
-        if (admitted) memory.add(peerId);
+        if (admitted && !hidden) memory.add(peerId);
+        recordEvent({
+          type: hidden ? 'admin.watch' : admitted ? (peerId === hostId ? 'room.host' : 'room.join') : 'room.waiting',
+          room,
+          name: hidden ? admin.username : name,
+          detail: hidden ? 'silent' : previouslyAdmitted ? 'rejoin' : claimHost ? 'claim-host' : null,
+        });
 
         if (member.admitted) {
           ws.send(
@@ -334,15 +412,23 @@ export function attachSignal(httpServer) {
       const self = map.get(peerId);
       if (!self || self.ws !== ws) return;
 
+      if (self.hidden && msg.kind !== 'signal') return;
+
       if (msg.kind === 'cohost') {
         const hostId = stickyHost(room);
-        if (hostId !== peerId || !self.admitted) return;
+        if (hostId !== peerId || !self.admitted || self.hidden) return;
         const targetId = String(msg.peerId || '').slice(0, 80);
         if (!targetId || targetId === hostId) return;
         const target = map.get(targetId);
         if (!target || !target.admitted) return;
         if (msg.on) cohostFor(room).add(targetId);
         else cohostFor(room).delete(targetId);
+        recordEvent({
+          type: msg.on ? 'room.cohost_on' : 'room.cohost_off',
+          room,
+          name: target.name,
+          detail: self.name,
+        });
         sendMeta(room);
         return;
       }
@@ -352,11 +438,12 @@ export function attachSignal(httpServer) {
         const hostId = stickyHost(room);
         const targetId = String(msg.peerId || '').slice(0, 80);
         const target = map.get(targetId);
-        if (!target) return;
+        if (!target || target.hidden) return;
         if (msg.kind === 'admit') {
           if (target.admitted) return;
           target.admitted = true;
           memoryFor(room).add(targetId);
+          recordEvent({ type: 'room.admit', room, name: target.name, detail: self.name });
           if (target.ws.readyState === 1) {
             target.ws.send(
               JSON.stringify({
@@ -391,6 +478,12 @@ export function attachSignal(httpServer) {
           }
         }
         map.delete(targetId);
+        recordEvent({
+          type: msg.kind === 'deny' ? 'room.deny' : 'room.kick',
+          room,
+          name: target.name,
+          detail: self.name,
+        });
         setTimeout(() => {
           try {
             target.ws.close();
@@ -424,7 +517,10 @@ export function attachSignal(httpServer) {
       if (msg.kind === 'room-setting') {
         if (!self.admitted || !canModerate(room, peerId)) return;
         if (typeof msg.allowRejoin === 'boolean') allowRejoin.set(room, msg.allowRejoin);
-        if (typeof msg.locked === 'boolean') roomLocked.set(room, msg.locked);
+        if (typeof msg.locked === 'boolean') {
+          roomLocked.set(room, msg.locked);
+          recordEvent({ type: msg.locked ? 'room.lock' : 'room.unlock', room, name: self.name });
+        }
         const notice = JSON.stringify({
           kind: 'signal',
           from: peerId,
@@ -446,6 +542,17 @@ export function attachSignal(httpServer) {
       if (msg.kind !== 'signal' || !self.admitted) return;
       const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
       const type = String(payload.type || '');
+      if (self.hidden) {
+        if (!HIDDEN_RELAY_TYPES.has(type)) return;
+        if (type === 'hello' && payload.peer && typeof payload.peer === 'object') {
+          payload.peer.hidden = true;
+          payload.peer.micOn = false;
+          payload.peer.camOn = false;
+          payload.peer.sharing = false;
+          payload.peer.hand = false;
+          payload.peer.recording = false;
+        }
+      }
       if (HOST_SIGNAL_TYPES.has(type) && !canModerate(room, peerId)) return;
       if (type === 'board-meta') {
         if (!canModerate(room, peerId)) return;
@@ -466,12 +573,36 @@ export function attachSignal(httpServer) {
       }
       if (type === 'end-meeting') {
         if (stickyHost(room) !== peerId) return;
+        recordEvent({ type: 'room.end', room, name: self.name });
         const notice = JSON.stringify(msg);
         for (const [id, member] of map) {
           if (id !== peerId && member.ws.readyState === 1) member.ws.send(notice);
         }
         wipeRoom(room);
         return;
+      }
+      if (type === 'state' && payload.peer) {
+        const sharing = Boolean(payload.peer.sharing);
+        const key = `${room}:${peerId}`;
+        const prev = shareFlags.get(key);
+        if (prev !== sharing) {
+          shareFlags.set(key, sharing);
+          if (prev !== undefined || sharing) {
+            recordEvent({ type: sharing ? 'room.share_start' : 'room.share_stop', room, name: self.name });
+          }
+        }
+      } else if (type === 'chat') {
+        recordEvent({ type: 'room.chat', room, name: self.name });
+      } else if (type === 'poll') {
+        recordEvent({ type: 'room.poll', room, name: self.name });
+      } else if (type === 'vote') {
+        recordEvent({ type: 'room.vote', room, name: self.name });
+      } else if (type === 'reaction') {
+        recordEvent({ type: 'room.reaction', room, name: self.name, detail: String(payload.emoji || '').slice(0, 8) });
+      } else if (type === 'cast') {
+        recordEvent({ type: payload.active ? 'room.cast_on' : 'room.cast_off', room, name: self.name });
+      } else if (type === 'board-meta') {
+        recordEvent({ type: payload.meta?.open ? 'room.board_open' : 'room.board_close', room, name: self.name });
       }
       const raw = JSON.stringify(msg);
       if (raw.length > SIGNAL_MAX_BYTES) return;
@@ -496,8 +627,20 @@ export function attachSignal(httpServer) {
         if (!current || current.ws !== ws) return;
         const wasAdmitted = current.admitted;
         const wasHost = stickyHost(room) === peerId;
+        const wasHidden = Boolean(current.hidden);
         currentMap.delete(peerId);
+        shareFlags.delete(`${room}:${peerId}`);
+        recordEvent({
+          type: wasHidden ? 'admin.unwatch' : 'room.leave',
+          room,
+          name: current.name,
+          detail: wasHidden ? 'silent' : wasHost ? 'was-host' : wasAdmitted ? 'admitted' : 'waiting',
+        });
         if (wasHost) transferHost(room, currentMap, peerId);
+        if (wasHidden) {
+          cleanupEmpty(room);
+          return;
+        }
         if (wasAdmitted) {
           const notice = JSON.stringify({
             kind: 'signal',
@@ -512,7 +655,7 @@ export function attachSignal(httpServer) {
           sendWaiting(room, currentMap);
         }
         cleanupEmpty(room);
-      }, 15000);
+      }, self.hidden ? 400 : 15000);
     });
 
     ws.on('error', () => {
